@@ -40,6 +40,7 @@ console.log("Env:", config.nodeEnv);
 process.on("unhandledRejection", (err) => {
   console.error("unhandledRejection:", err);
 });
+
 process.on("uncaughtException", (err) => {
   console.error("uncaughtException:", err);
 });
@@ -232,19 +233,38 @@ function buildValueSummaryForSession(session, opts = {}) {
    Small utils
 ========================================================= */
 
+function isControlIntent(message = "") {
+  const text = normalizeText(message).toLowerCase();
+
+  return (
+    text.includes("don't want") ||
+    text.includes("do not want") ||
+    text.includes("not ready") ||
+    text.includes("troubleshoot") ||
+    text.includes("not yet") ||
+    text.includes("keep going") ||
+    text.includes("continue") ||
+    text.includes("figure it out first")
+  );
+}
+
 function arr(v) {
   return Array.isArray(v) ? v : [];
 }
+
 function str(v) {
   return typeof v === "string" ? v : "";
 }
+
 function normalizeText(v) {
   return String(v ?? "").trim();
 }
+
 function containsAny(text, words) {
   const t = normalizeText(text).toLowerCase();
   return words.some((w) => t.includes(String(w).toLowerCase()));
 }
+
 function looksLikePlaceholder(value) {
   const v = (value || "").trim().toLowerCase();
   if (!v) return false;
@@ -252,6 +272,7 @@ function looksLikePlaceholder(value) {
   if (v === "n/a" || v === "na" || v === "unknown") return true;
   return false;
 }
+
 function looksLikeNoAccess(value) {
   const v = (value || "").trim().toLowerCase();
   if (!v) return false;
@@ -264,6 +285,7 @@ function looksLikeNoAccess(value) {
     v.includes("not accessible")
   );
 }
+
 function normalizeId(value) {
   return (value || "").trim();
 }
@@ -277,6 +299,7 @@ function componentRequiresPowerOff(suspectedComponent) {
   const k = (suspectedComponent || "").toLowerCase();
   return k.includes("condenser") || k.includes("fan") || k.includes("motor") || k.includes("compressor");
 }
+
 function normalizeChoiceText(v) {
   return String(v ?? "")
     .trim()
@@ -299,10 +322,12 @@ function coerceChoiceAnswer(message, choices) {
     const hit = list.find((c) => normalizeChoiceText(c) === "yes");
     if (hit) return hit;
   }
+
   if (["n", "no", "nope", "false"].includes(msg)) {
     const hit = list.find((c) => normalizeChoiceText(c) === "no");
     if (hit) return hit;
   }
+
   if (["not sure", "unsure", "idk", "i dont know", "i don't know"].includes(msg)) {
     const hit = list.find((c) => normalizeChoiceText(c) === "not sure");
     if (hit) return hit;
@@ -314,6 +339,2161 @@ function coerceChoiceAnswer(message, choices) {
   }
 
   return null;
+}
+
+/* =========================================================
+   REASONING ENGINE (NEW)
+========================================================= */
+
+function ensureReasoning(session) {
+  ensureDiagnosisFields(session);
+
+  const dx = session.diagnosis;
+
+  dx.reasoning = dx.reasoning || {
+    symptomFamily: null,
+    symptomFamilyConfidence: 0,
+    ontologyCandidates: [],
+    evidence: [],
+    hypotheses: [],
+    lastAction: null,
+    lockDecision: {
+      ready: false,
+      reason: null,
+      missingEvidence: [],
+      conflictingEvidence: [],
+      supportingEvidence: []
+    }
+  };
+
+  if (!Array.isArray(dx.reasoning.ontologyCandidates)) dx.reasoning.ontologyCandidates = [];
+  if (!Array.isArray(dx.reasoning.evidence)) dx.reasoning.evidence = [];
+  if (!Array.isArray(dx.reasoning.hypotheses)) dx.reasoning.hypotheses = [];
+
+  dx.reasoning.lockDecision = dx.reasoning.lockDecision || {
+    ready: false,
+    reason: null,
+    missingEvidence: [],
+    conflictingEvidence: [],
+    supportingEvidence: []
+  };
+
+  if (!Array.isArray(dx.reasoning.lockDecision.missingEvidence)) {
+    dx.reasoning.lockDecision.missingEvidence = [];
+  }
+
+  if (!Array.isArray(dx.reasoning.lockDecision.conflictingEvidence)) {
+    dx.reasoning.lockDecision.conflictingEvidence = [];
+  }
+
+  if (!Array.isArray(dx.reasoning.lockDecision.supportingEvidence)) {
+    dx.reasoning.lockDecision.supportingEvidence = [];
+  }
+}
+const DIAGNOSTIC_ONTOLOGY = {
+  refrigerator: {
+    noise: {
+      subsystemCandidates: ["airflow", "compressor_system", "ice_system"],
+      components: [
+        {
+          component: "condenser fan motor",
+          subsystem: "airflow",
+          evidenceKeys: ["location", "sound_type", "when_happens", "door_stops_noise"],
+          evidencePatterns: {
+            location: ["back bottom"],
+            sound_type: ["squeal", "grinding", "buzzing", "rattle"],
+            when_happens: ["during cooling", "always", "constant"],
+            door_stops_noise: ["no", "not sure"]
+          }
+        },
+        {
+          component: "evaporator fan motor",
+          subsystem: "airflow",
+          evidenceKeys: ["location", "door_stops_noise", "frost_buildup", "when_happens"],
+          evidencePatterns: {
+            location: ["inside freezer", "inside fridge"],
+            door_stops_noise: ["yes"],
+            frost_buildup: ["yes"],
+            when_happens: ["after door closes", "during cooling"]
+          }
+        },
+        {
+          component: "compressor or mounts",
+          subsystem: "compressor_system",
+          evidenceKeys: ["location", "sound_type", "when_happens"],
+          evidencePatterns: {
+            location: ["back bottom", "back top"],
+            sound_type: ["rattle", "clicking", "humming"],
+            when_happens: ["during cooling", "always", "constant"]
+          }
+        },
+        {
+          component: "ice maker or auger",
+          subsystem: "ice_system",
+          evidenceKeys: ["when_happens", "location", "sound_type"],
+          evidencePatterns: {
+            when_happens: ["during ice maker"],
+            location: ["inside freezer"],
+            sound_type: ["grinding", "clicking", "buzzing"]
+          }
+        },
+        {
+          component: "defrost or airflow issue",
+          subsystem: "airflow",
+          evidenceKeys: ["frost_buildup", "location", "when_happens"],
+          evidencePatterns: {
+            frost_buildup: ["yes"],
+            location: ["inside freezer", "inside fridge"],
+            when_happens: ["during cooling"]
+          }
+        }
+      ]
+    },
+    not_cooling: {
+      subsystemCandidates: ["airflow", "sealed_system", "defrost"],
+      components: [
+        {
+          component: "evaporator fan motor",
+          subsystem: "airflow",
+          evidenceKeys: ["freezer_temp", "fridge_temp", "airflow_present", "frost_buildup"]
+        },
+        {
+          component: "condenser fan motor",
+          subsystem: "airflow",
+          evidenceKeys: ["compressor_running", "airflow_present", "rear_heat_level"]
+        },
+        {
+          component: "defrost system issue",
+          subsystem: "defrost",
+          evidenceKeys: ["frost_buildup", "cooling_pattern", "freezer_temp"]
+        },
+        {
+          component: "compressor start device",
+          subsystem: "sealed_system",
+          evidenceKeys: ["clicking", "compressor_running", "rear_heat_level"]
+        }
+      ]
+    },
+    water_leak: {
+      subsystemCandidates: ["drain", "water_supply"],
+      components: [
+        {
+          component: "defrost drain blockage",
+          subsystem: "drain",
+          evidenceKeys: ["leak_location", "freezer_temp", "frost_buildup"]
+        },
+        {
+          component: "water inlet valve",
+          subsystem: "water_supply",
+          evidenceKeys: ["leak_location", "when_happens", "ice_maker_involved"]
+        }
+      ]
+    },
+    default: {
+      subsystemCandidates: ["general"],
+      components: [
+        { component: "fan motor", subsystem: "general", evidenceKeys: ["main_symptom", "timing", "location"] },
+        { component: "control board", subsystem: "general", evidenceKeys: ["main_symptom", "error_codes", "timing"] },
+        { component: "sensor or switch", subsystem: "general", evidenceKeys: ["main_symptom", "timing", "location"] }
+      ]
+    }
+  },
+
+  dryer: {
+    no_start: {
+      subsystemCandidates: ["start_circuit", "drive_system", "controls"],
+      components: [
+        {
+          component: "drive motor",
+          subsystem: "drive_system",
+          evidenceKeys: ["sound_type", "drum_moves_by_hand", "door_switch_held_effect"]
+        },
+        {
+          component: "door switch",
+          subsystem: "start_circuit",
+          evidenceKeys: ["door_switch_response", "door_switch_held_effect", "sound_type"]
+        },
+        {
+          component: "belt switch or idler path",
+          subsystem: "drive_system",
+          evidenceKeys: ["drum_moves_by_hand", "drum_spin_status", "sound_type"]
+        },
+        {
+          component: "control board",
+          subsystem: "controls",
+          evidenceKeys: ["sound_type", "error_codes", "timing"]
+        }
+      ]
+    },
+    noise: {
+      subsystemCandidates: ["drive_system"],
+      components: [
+        { component: "idler pulley", subsystem: "drive_system", evidenceKeys: ["sound_type", "timing"] },
+        { component: "drum support roller", subsystem: "drive_system", evidenceKeys: ["sound_type", "timing"] },
+        { component: "blower wheel", subsystem: "drive_system", evidenceKeys: ["sound_type", "location"] },
+        { component: "drive motor", subsystem: "drive_system", evidenceKeys: ["sound_type", "timing"] }
+      ]
+    },
+    default: {
+      subsystemCandidates: ["general"],
+      components: [
+        { component: "drive motor", subsystem: "general", evidenceKeys: ["main_symptom", "timing"] },
+        { component: "door switch", subsystem: "general", evidenceKeys: ["main_symptom", "timing"] },
+        { component: "control board", subsystem: "general", evidenceKeys: ["main_symptom", "error_codes"] }
+      ]
+    }
+  },
+
+  washer: {
+    default: {
+      subsystemCandidates: ["general"],
+      components: [
+        { component: "drain pump", subsystem: "general", evidenceKeys: ["main_symptom", "timing", "sound_type"] },
+        { component: "lid switch", subsystem: "general", evidenceKeys: ["main_symptom", "timing"] },
+        { component: "drive motor", subsystem: "general", evidenceKeys: ["main_symptom", "sound_type"] }
+      ]
+    }
+  },
+
+  dishwasher: {
+    default: {
+      subsystemCandidates: ["general"],
+      components: [
+        { component: "drain pump", subsystem: "general", evidenceKeys: ["main_symptom", "timing", "sound_type"] },
+        { component: "circulation pump", subsystem: "general", evidenceKeys: ["main_symptom", "sound_type"] },
+        { component: "door latch", subsystem: "general", evidenceKeys: ["main_symptom", "timing"] }
+      ]
+    }
+  },
+
+  oven: {
+    default: {
+      subsystemCandidates: ["general"],
+      components: [
+        { component: "bake igniter", subsystem: "general", evidenceKeys: ["main_symptom", "timing"] },
+        { component: "heating element", subsystem: "general", evidenceKeys: ["main_symptom", "timing"] },
+        { component: "control board", subsystem: "general", evidenceKeys: ["main_symptom", "error_codes"] }
+      ]
+    }
+  },
+
+  microwave: {
+    default: {
+      subsystemCandidates: ["general"],
+      components: [
+        { component: "door switch", subsystem: "general", evidenceKeys: ["main_symptom", "timing"] },
+        { component: "turntable motor", subsystem: "general", evidenceKeys: ["main_symptom", "location"] },
+        { component: "control board", subsystem: "general", evidenceKeys: ["main_symptom", "error_codes"] }
+      ]
+    }
+  },
+
+  hvac: {
+    default: {
+      subsystemCandidates: ["general"],
+      components: [
+        { component: "blower motor", subsystem: "general", evidenceKeys: ["main_symptom", "sound_type", "airflow_present"] },
+        { component: "contactor", subsystem: "general", evidenceKeys: ["main_symptom", "clicking", "timing"] },
+        { component: "capacitor", subsystem: "general", evidenceKeys: ["main_symptom", "humming", "fan_spins_by_hand"] }
+      ]
+    }
+  },
+
+  default: {
+    default: {
+      subsystemCandidates: ["general"],
+      components: [
+        { component: "motor", subsystem: "general", evidenceKeys: ["main_symptom", "timing", "sound_type"] },
+        { component: "switch or sensor", subsystem: "general", evidenceKeys: ["main_symptom", "timing"] },
+        { component: "control board", subsystem: "general", evidenceKeys: ["main_symptom", "error_codes"] }
+      ]
+    }
+  }
+};
+
+function normalizeEvidenceKey(key) {
+  const k = normalizeText(key).toLowerCase();
+
+  const map = {
+    symptomdetails: "main_symptom",
+    symptomdescription: "main_symptom",
+    issuedescription: "main_symptom",
+    description: "main_symptom",
+    details: "details",
+    whenhappens: "when_happens",
+    timing: "timing",
+    whenoccurs: "when_happens",
+    location: "location",
+    noiselocation: "location",
+    symptomlocation: "location",
+    soundtype: "sound_type",
+    noisetype: "sound_type",
+    soundkind: "sound_type",
+    errorcodes: "error_codes",
+    indicatorlights: "error_codes",
+    codesshown: "error_codes",
+    codespresent: "error_codes",
+    doorstopsnoise: "door_stops_noise",
+    doorlatchcheck: "door_switch_response",
+    doorswitchresponse: "door_switch_response",
+    doorclick: "door_switch_response",
+    doorlatchclick: "door_switch_response",
+    drumspins: "drum_spin_status",
+    drumspinstatus: "drum_spin_status",
+    drumdoesspin: "drum_spin_status",
+    drummovesbyhand: "drum_moves_by_hand",
+    drumturnsbyhand: "drum_moves_by_hand",
+    manualdrummovement: "drum_moves_by_hand",
+    doorswitchheldeffect: "door_switch_held_effect",
+    doorswitchchange: "door_switch_held_effect",
+    manualdoorswitcheffect: "door_switch_held_effect",
+    frostbuildup: "frost_buildup",
+    powerstate: "power_state"
+  };
+
+  const normalized = k.replace(/[\s_\-]/g, "");
+  return map[normalized] || k.replace(/\s+/g, "_");
+}
+
+function normalizeEvidenceValue(value) {
+  const v = normalizeText(value).toLowerCase();
+
+  const map = {
+    "back lower": "back bottom",
+    "rear lower": "back bottom",
+    "bottom rear": "back bottom",
+    "rear bottom": "back bottom",
+    "back upper": "back top",
+    "rear upper": "back top",
+    "inside the freezer": "inside freezer",
+    "in the freezer": "inside freezer",
+    "inside the fridge": "inside fridge",
+    "in the fridge": "inside fridge",
+    "only during cooling": "during cooling",
+    "while cooling": "during cooling",
+    "all the time": "always",
+    "constant": "constant",
+    "constantly": "constant",
+    "stops when door opens": "yes",
+    "goes away when i open the door": "yes",
+    "does not stop when i open the door": "no",
+    "hum": "humming",
+    "buzz": "buzzing",
+    "grind": "grinding",
+    "squeak": "squeal",
+    "dont know": "not sure",
+    "don't know": "not sure",
+    "idk": "not sure"
+  };
+
+  return map[v] || v;
+}
+
+function makeEvidenceFact({ key, value, source = "unknown", confidence = 70, raw = null }) {
+  const normalizedKey = normalizeEvidenceKey(key);
+  const normalizedValue = typeof value === "string" ? normalizeEvidenceValue(value) : value;
+
+  return {
+    key: normalizedKey,
+    value: normalizedValue,
+    normalizedValue,
+    source,
+    confidence: normalizeConfidence(confidence),
+    raw: raw ?? value
+  };
+}
+
+function upsertEvidenceFact(evidence, fact) {
+  if (!fact?.key) return evidence;
+
+  const list = Array.isArray(evidence) ? evidence : [];
+  const idx = list.findIndex(
+    (x) =>
+      x?.key === fact.key &&
+      normalizeText(String(x?.normalizedValue ?? x?.value ?? "")).toLowerCase() ===
+        normalizeText(String(fact.normalizedValue ?? fact.value ?? "")).toLowerCase()
+  );
+
+  if (idx >= 0) {
+    const existing = list[idx];
+    list[idx] = {
+      ...existing,
+      ...fact,
+      confidence: Math.max(existing?.confidence || 0, fact?.confidence || 0)
+    };
+    return list;
+  }
+
+  list.push(fact);
+  return list;
+}
+
+function getEvidenceValue(session, key) {
+  ensureReasoning(session);
+  const nk = normalizeEvidenceKey(key);
+  const facts = session.diagnosis.reasoning.evidence || [];
+  const hit = [...facts].reverse().find((e) => e?.key === nk);
+  return hit ? hit.normalizedValue ?? hit.value : null;
+}
+
+function summarizeEvidenceProfile(session) {
+  ensureReasoning(session);
+
+  const facts = session.diagnosis.reasoning.evidence || [];
+  const byKey = {};
+
+  for (const fact of facts) {
+    if (!fact?.key) continue;
+    byKey[fact.key] = fact.normalizedValue ?? fact.value;
+  }
+
+  return byKey;
+}
+
+function getOntologyBranch(appliance, symptomFamily) {
+  const a = normalizeApplianceType(appliance);
+  const applianceBranch = DIAGNOSTIC_ONTOLOGY[a] || DIAGNOSTIC_ONTOLOGY.default;
+  return applianceBranch[symptomFamily] || applianceBranch.default || DIAGNOSTIC_ONTOLOGY.default.default;
+}
+
+function buildOntologyCandidateList({ appliance, symptomFamily }) {
+  const branch = getOntologyBranch(appliance, symptomFamily);
+  return Array.isArray(branch?.components) ? branch.components.map((c) => ({ ...c })) : [];
+}
+
+function deriveMissingEvidenceForCandidates(session, candidates) {
+  const profile = summarizeEvidenceProfile(session);
+  const list = Array.isArray(candidates) ? candidates : [];
+  const counts = new Map();
+
+  for (const candidate of list) {
+    const keys = Array.isArray(candidate?.evidenceKeys) ? candidate.evidenceKeys : [];
+    for (const key of keys) {
+      if (profile[key] == null || profile[key] === "" || profile[key] === "not sure") {
+        counts.set(key, (counts.get(key) || 0) + 1);
+      }
+    }
+  }
+
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([key, count]) => ({ key, count }));
+}
+
+function buildCandidateContrastMap(candidates) {
+  const map = {};
+  const list = Array.isArray(candidates) ? candidates : [];
+
+  for (const candidate of list) {
+    const name = candidate?.component;
+    if (!name) continue;
+
+    map[name] = {
+      subsystem: candidate?.subsystem || "general",
+      evidenceKeys: Array.isArray(candidate?.evidenceKeys) ? candidate.evidenceKeys : [],
+      evidencePatterns: candidate?.evidencePatterns || {}
+    };
+  }
+
+  return map;
+}
+
+function scoreEvidenceSupportForCandidate(candidate, evidenceProfile) {
+  const patterns = candidate?.evidencePatterns || {};
+  const keys = Object.keys(patterns);
+  let support = 0;
+  let contradictions = 0;
+  const supportingEvidence = [];
+  const conflictingEvidence = [];
+  const missingEvidence = [];
+
+  for (const key of keys) {
+    const actual = evidenceProfile[key];
+    const expected = Array.isArray(patterns[key]) ? patterns[key] : [];
+
+    if (actual == null || actual === "" || actual === "not sure") {
+      missingEvidence.push(key);
+      continue;
+    }
+
+    if (expected.includes(actual)) {
+      support += 1;
+      supportingEvidence.push(`${key}:${actual}`);
+    } else {
+      contradictions += 1;
+      conflictingEvidence.push(`${key}:${actual}`);
+    }
+  }
+
+  return { support, contradictions, supportingEvidence, conflictingEvidence, missingEvidence };
+}
+async function extractEvidenceFromMessage({ session, userText, boundAnswer }) {
+  ensureReasoning(session);
+
+  let evidence = session.diagnosis.reasoning.evidence || [];
+
+  if (boundAnswer?.key) {
+    evidence = upsertEvidenceFact(
+      evidence,
+      makeEvidenceFact({
+        key: boundAnswer.key,
+        value: boundAnswer.value,
+        source: "answer",
+        confidence: 95,
+        raw: boundAnswer.value
+      })
+    );
+  }
+
+  const answersByIntent = session.diagnosis?.answersByIntent || {};
+  for (const [key, value] of Object.entries(answersByIntent)) {
+    if (value == null || value === "") continue;
+    evidence = upsertEvidenceFact(
+      evidence,
+      makeEvidenceFact({
+        key,
+        value,
+        source: "answersByIntent",
+        confidence: 90,
+        raw: value
+      })
+    );
+  }
+
+  if (!normalizeText(userText)) {
+    session.diagnosis.reasoning.evidence = evidence;
+    return evidence;
+  }
+
+  const response = await client.responses.create({
+    model: "gpt-4o-mini",
+    input: [
+      {
+        role: "system",
+        content: `
+You extract structured diagnostic evidence from user text for an appliance diagnosis engine.
+
+Return only valid JSON:
+{
+  "evidence": [
+    { "key": "", "value": "", "confidence": 0 }
+  ]
+}
+
+Allowed keys:
+main_symptom
+timing
+when_happens
+location
+sound_type
+error_codes
+door_stops_noise
+door_switch_response
+drum_spin_status
+drum_moves_by_hand
+door_switch_held_effect
+frost_buildup
+airflow_present
+compressor_running
+leak_location
+freezer_temp
+fridge_temp
+cooling_pattern
+ice_maker_involved
+rear_heat_level
+fan_spins_by_hand
+clicking
+humming
+power_state
+details
+
+Rules:
+Only extract concrete observable facts.
+Do not infer a failed component.
+Use short normalized values.
+`.trim()
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          appliance: session.appliance,
+          issueCategory: session.issueCategory,
+          userText
+        })
+      }
+    ],
+    text: { format: { type: "json_object" } }
+  });
+
+  try {
+    const parsed = JSON.parse(response.output_text || "{}");
+    if (Array.isArray(parsed?.evidence)) {
+      for (const item of parsed.evidence) {
+        if (!item?.key) continue;
+        evidence = upsertEvidenceFact(
+          evidence,
+          makeEvidenceFact({
+            key: item.key,
+            value: item.value,
+            source: "llm_extract",
+            confidence: item.confidence ?? 70,
+            raw: item.value
+          })
+        );
+      }
+    }
+  } catch {}
+
+  session.diagnosis.reasoning.evidence = evidence;
+  return evidence;
+}
+async function classifySymptomFamily({ session }) {
+  ensureReasoning(session);
+
+  const appliance = normalizeApplianceType(session.appliance);
+  const issueCategory = normalizeText(session.issueCategory).toLowerCase();
+  const symptoms = Array.isArray(session.symptoms) ? session.symptoms.join(" ") : "";
+  const userDescription = normalizeText(session.diagnosis?.userDescription || "");
+  const answersByIntent = session.diagnosis?.answersByIntent || {};
+  const evidenceProfile = summarizeEvidenceProfile(session);
+
+  const combined = `${issueCategory} ${symptoms} ${userDescription}`.toLowerCase();
+
+  const ruleSignals = {
+    noise: ["noise", "loud", "grinding", "buzzing", "clicking", "rattle", "squeal", "humming", "sound"],
+    no_start: ["won't start", "wont start", "doesn't start", "doesnt start", "not starting", "press start", "no start"],
+    not_cooling: ["not cooling", "warm", "not cold", "temperature", "freezer thawing", "fridge warm"],
+    water_leak: ["leak", "leaking", "water on floor", "puddle", "dripping"],
+    no_heat: ["no heat", "not heating", "cold air", "won't heat", "wont heat"],
+    not_draining: ["not draining", "standing water", "won't drain", "wont drain"],
+    vibration: ["vibration", "vibrating", "shaking"]
+  };
+
+  for (const [family, signals] of Object.entries(ruleSignals)) {
+    if (signals.some((s) => combined.includes(s))) {
+      session.diagnosis.reasoning.symptomFamily = family;
+      session.diagnosis.reasoning.symptomFamilyConfidence = 90;
+      return {
+        symptomFamily: family,
+        confidence: 90,
+        source: "rules"
+      };
+    }
+  }
+
+  if (issueCategory) {
+    session.diagnosis.reasoning.symptomFamily = issueCategory.replace(/\s+/g, "_");
+    session.diagnosis.reasoning.symptomFamilyConfidence = 70;
+    return {
+      symptomFamily: session.diagnosis.reasoning.symptomFamily,
+      confidence: 70,
+      source: "issueCategory"
+    };
+  }
+
+  const response = await client.responses.create({
+    model: "gpt-4o-mini",
+    input: [
+      {
+        role: "system",
+        content: `
+You are classifying appliance symptom families for a constrained diagnosis engine.
+
+Return only valid JSON:
+{
+  "symptomFamily": "",
+  "confidence": 0,
+  "signals": []
+}
+
+Allowed families:
+noise
+no_start
+not_cooling
+water_leak
+not_draining
+no_heat
+vibration
+default
+
+Choose the single best family. Be conservative.
+`.trim()
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          appliance,
+          issueCategory,
+          userDescription,
+          symptoms,
+          answersByIntent,
+          evidenceProfile
+        })
+      }
+    ],
+    text: { format: { type: "json_object" } }
+  });
+
+  let parsed = {};
+  try {
+    parsed = JSON.parse(response.output_text || "{}");
+  } catch {}
+
+  const symptomFamily = normalizeText(parsed?.symptomFamily || "default").toLowerCase() || "default";
+  const confidence = normalizeConfidence(parsed?.confidence ?? 50);
+
+  session.diagnosis.reasoning.symptomFamily = symptomFamily;
+  session.diagnosis.reasoning.symptomFamilyConfidence = confidence;
+
+  return {
+    symptomFamily,
+    confidence,
+    source: "llm"
+  };
+}
+async function rankHypotheses({ session }) {
+  ensureReasoning(session);
+
+  const symptomFamilyResult = await classifySymptomFamily({ session });
+  const symptomFamily = symptomFamilyResult?.symptomFamily || "default";
+
+  const ontologyCandidates = buildOntologyCandidateList({
+    appliance: session.appliance,
+    symptomFamily
+  });
+
+  session.diagnosis.reasoning.ontologyCandidates = ontologyCandidates;
+
+  const evidenceProfile = summarizeEvidenceProfile(session);
+  const preScored = ontologyCandidates.map((candidate) => {
+    const supportInfo = scoreEvidenceSupportForCandidate(candidate, evidenceProfile);
+
+    const heuristicConfidence = clampNumber(
+      35 + supportInfo.support * 18 - supportInfo.contradictions * 12,
+      5,
+      92
+    );
+
+    return {
+      component: candidate.component,
+      cause: candidate.component,
+      subsystem: candidate.subsystem || "general",
+      confidence: heuristicConfidence,
+      support: supportInfo.support,
+      contradictions: supportInfo.contradictions,
+      supportingEvidence: supportInfo.supportingEvidence,
+      conflictingEvidence: supportInfo.conflictingEvidence,
+      missingEvidence: supportInfo.missingEvidence,
+      notes: supportInfo.supportingEvidence.join(", ")
+    };
+  });
+
+  const response = await client.responses.create({
+    model: "gpt-4o-mini",
+    input: [
+      {
+        role: "system",
+        content: `
+You are ranking appliance fault hypotheses inside a constrained diagnosis engine.
+
+Return only valid JSON:
+{
+  "hypotheses": [
+    {
+      "component": "",
+      "confidence": 0,
+      "reason": "",
+      "missingEvidence": [],
+      "conflictingEvidence": [],
+      "supportingEvidence": []
+    }
+  ]
+}
+
+Rules:
+Only rank candidates from the provided allowedCandidates list.
+Do not introduce any new component names.
+Confidence must reflect actual evidence strength, not guesswork.
+Be conservative.
+`.trim()
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          appliance: session.appliance,
+          issueCategory: session.issueCategory,
+          symptomFamily,
+          evidenceProfile,
+          allowedCandidates: preScored.map((x) => ({
+            component: x.component,
+            subsystem: x.subsystem,
+            support: x.support,
+            contradictions: x.contradictions,
+            supportingEvidence: x.supportingEvidence,
+            conflictingEvidence: x.conflictingEvidence,
+            missingEvidence: x.missingEvidence,
+            heuristicConfidence: x.confidence
+          }))
+        })
+      }
+    ],
+    text: { format: { type: "json_object" } }
+  });
+
+  let parsed = {};
+  try {
+    parsed = JSON.parse(response.output_text || "{}");
+  } catch {}
+
+  const allowedNames = new Set(preScored.map((x) => x.component.toLowerCase()));
+
+  const llmHypotheses = Array.isArray(parsed?.hypotheses)
+    ? parsed.hypotheses
+        .filter((x) => allowedNames.has(normalizeText(x?.component).toLowerCase()))
+        .map((x) => ({
+          component: x.component,
+          cause: x.component,
+          confidence: normalizeConfidence(x.confidence ?? 0),
+          reason: str(x.reason),
+          missingEvidence: arr(x.missingEvidence),
+          conflictingEvidence: arr(x.conflictingEvidence),
+          supportingEvidence: arr(x.supportingEvidence)
+        }))
+    : [];
+
+  const merged = preScored.map((base) => {
+    const llm = llmHypotheses.find(
+      (x) => normalizeText(x.component).toLowerCase() === normalizeText(base.component).toLowerCase()
+    );
+
+    const confidence = llm
+      ? clampNumber(Math.round((base.confidence * 0.45) + (normalizeConfidence(llm.confidence) * 0.55)), 0, 100)
+      : base.confidence;
+
+    return {
+      component: base.component,
+      cause: base.cause,
+      subsystem: base.subsystem,
+      confidence,
+      reason: llm?.reason || base.notes || "",
+      support: base.support,
+      contradictions: base.contradictions,
+      supportingEvidence: llm?.supportingEvidence?.length ? llm.supportingEvidence : base.supportingEvidence,
+      conflictingEvidence: llm?.conflictingEvidence?.length ? llm.conflictingEvidence : base.conflictingEvidence,
+      missingEvidence: llm?.missingEvidence?.length ? llm.missingEvidence : base.missingEvidence,
+      notes: llm?.reason || base.notes || ""
+    };
+  });
+
+  const hypotheses = merged.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+
+  session.diagnosis.reasoning.hypotheses = hypotheses;
+
+  const top = hypotheses[0];
+  if (top) {
+    session.diagnosis.confidence = top.confidence || 0;
+    session.diagnosis.suggestedComponent = top.component || top.cause;
+    session.diagnosis.component = session.diagnosis.suggestedComponent;
+  }
+
+  return hypotheses;
+}
+
+async function chooseNextDiagnosticAction({ session }) {
+  ensureReasoning(session);
+
+  const hypotheses = Array.isArray(session.diagnosis.reasoning.hypotheses)
+    ? session.diagnosis.reasoning.hypotheses
+    : [];
+
+  const candidates = Array.isArray(session.diagnosis.reasoning.ontologyCandidates)
+    ? session.diagnosis.reasoning.ontologyCandidates
+    : [];
+
+  const evidenceProfile = summarizeEvidenceProfile(session);
+  const missingEvidenceRank = deriveMissingEvidenceForCandidates(session, candidates);
+  const contrastMap = buildCandidateContrastMap(candidates);
+
+  const top = hypotheses[0] || null;
+  const second = hypotheses[1] || null;
+
+  const questionLibrary = {
+    location: {
+      assistant: "Where is the issue most noticeable?",
+      input: {
+        type: "choice",
+        key: "location",
+        choices: ["back bottom", "back top", "inside freezer", "inside fridge", "cannot tell"]
+      }
+    },
+    sound_type: {
+      assistant: "Which best describes the sound?",
+      input: {
+        type: "choice",
+        key: "soundType",
+        choices: ["squeal", "grinding", "rattle", "humming", "clicking", "buzzing", "other", "not sure"]
+      }
+    },
+    when_happens: {
+      assistant: "When does it happen most?",
+      input: {
+        type: "choice",
+        key: "whenHappens",
+        choices: ["always", "intermittent", "during cooling", "after door closes", "during ice maker", "not sure"]
+      }
+    },
+    timing: {
+      assistant: "When exactly does the problem happen?",
+      input: {
+        type: "text",
+        key: "timing",
+        choices: []
+      }
+    },
+    door_stops_noise: {
+      assistant: "Does the noise stop when you open the door?",
+      input: {
+        type: "choice",
+        key: "doorStopsNoise",
+        choices: ["yes", "no", "not sure"]
+      }
+    },
+    frost_buildup: {
+      assistant: "Do you see frost buildup where the issue is happening?",
+      input: {
+        type: "choice",
+        key: "frostBuildup",
+        choices: ["yes", "no", "not sure"]
+      }
+    },
+    error_codes: {
+      assistant: "Are there any error codes or blinking lights showing?",
+      input: {
+        type: "choice",
+        key: "errorCodes",
+        choices: ["yes", "no", "not sure"]
+      }
+    },
+    drum_moves_by_hand: {
+      assistant: "With power off, does the drum move freely by hand or feel stuck?",
+      input: {
+        type: "choice",
+        key: "drumMovesByHand",
+        choices: ["moves freely", "feels stuck", "not sure"]
+      }
+    },
+    door_switch_held_effect: {
+      assistant: "When you press and hold the door switch, what changes do you notice?",
+      input: {
+        type: "choice",
+        key: "doorSwitchHeldEffect",
+        choices: ["nothing changes", "drum tries to move", "heater comes on", "not sure"]
+      }
+    },
+    main_symptom: {
+      assistant: "What is the single main symptom right now, and when does it happen?",
+      input: {
+        type: "text",
+        key: "symptomDetails",
+        choices: []
+      }
+    },
+    details: {
+      assistant: "Tell me the next most noticeable thing you observe when the issue happens.",
+      input: {
+        type: "text",
+        key: "details",
+        choices: []
+      }
+    }
+  };
+
+  function mapEvidenceKeyToIntentKey(evidenceKey) {
+  const map = {
+    when_happens: "whenHappens",
+    timing: "timing",
+    location: "location",
+    sound_type: "soundType",
+    door_stops_noise: "doorStopsNoise",
+    frost_buildup: "frostBuildup",
+    error_codes: "errorCodes",
+    drum_moves_by_hand: "drumMovesByHand",
+    door_switch_held_effect: "doorSwitchHeldEffect",
+    door_switch_response: "doorSwitchResponse",
+    main_symptom: "symptomDetails",
+    details: "details"
+  };
+  return map[evidenceKey] || evidenceKey;
+}
+
+  function getIntentFamily(intentKey) {
+    const k = normalizeText(intentKey);
+
+    if (["whenHappens", "timing"].includes(k)) return "timing_family";
+    if (["symptomDetails", "issueDescription", "description", "symptomDescription", "main_symptom"].includes(k)) {
+      return "main_symptom_family";
+    }
+    if (["location"].includes(k)) return "location_family";
+    if (["soundType"].includes(k)) return "sound_family";
+    if (["doorStopsNoise"].includes(k)) return "door_noise_family";
+    if (["frostBuildup"].includes(k)) return "frost_family";
+    if (["errorCodes"].includes(k)) return "error_code_family";
+    if (["drumMovesByHand"].includes(k)) return "drum_hand_family";
+    if (["doorSwitchHeldEffect"].includes(k)) return "door_switch_effect_family";
+
+    return k;
+  }
+
+  function hasMeaningfulAnswerInFamily(intentKey) {
+    const family = getIntentFamily(intentKey);
+
+    const familyMembers = {
+      timing_family: ["whenHappens", "timing"],
+      main_symptom_family: ["symptomDetails", "issueDescription", "description", "symptomDescription"],
+      location_family: ["location"],
+      sound_family: ["soundType"],
+      door_noise_family: ["doorStopsNoise"],
+      frost_family: ["frostBuildup"],
+      error_code_family: ["errorCodes"],
+      drum_hand_family: ["drumMovesByHand"],
+      door_switch_effect_family: ["doorSwitchHeldEffect"]
+    };
+
+    const members = familyMembers[family] || [intentKey];
+    return members.some((member) => hasMeaningfulAnswerByIntent(session, member));
+  }
+
+  function wasQuestionAlreadyAskedInFamily(intentKey) {
+    const family = getIntentFamily(intentKey);
+
+    const familyMembers = {
+      timing_family: ["whenHappens", "timing"],
+      main_symptom_family: ["symptomDetails", "issueDescription", "description", "symptomDescription"],
+      location_family: ["location"],
+      sound_family: ["soundType"],
+      door_noise_family: ["doorStopsNoise"],
+      frost_family: ["frostBuildup"],
+      error_code_family: ["errorCodes"],
+      drum_hand_family: ["drumMovesByHand"],
+      door_switch_effect_family: ["doorSwitchHeldEffect"]
+    };
+
+    const members = familyMembers[family] || [intentKey];
+    return members.some((member) => alreadyAskedQuestion(session, member));
+  }
+
+  function isQuestionStillUseful(evidenceKey) {
+    const currentValue = evidenceProfile[evidenceKey];
+    if (currentValue != null && currentValue !== "" && currentValue !== "not sure") {
+      return false;
+    }
+
+    const intentKey = mapEvidenceKeyToIntentKey(evidenceKey);
+
+    if (hasMeaningfulAnswerInFamily(intentKey)) {
+      return false;
+    }
+
+    if (wasQuestionAlreadyAskedInFamily(intentKey) && !hasMeaningfulAnswerInFamily(intentKey)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  let targetEvidenceKey = null;
+
+  if (top && second) {
+    const topContrastKeys = contrastMap[top.component]?.evidenceKeys || [];
+    const secondContrastKeys = contrastMap[second.component]?.evidenceKeys || [];
+    const union = [...new Set([...topContrastKeys, ...secondContrastKeys])];
+
+    const unresolvedContrast = union.find((key) => isQuestionStillUseful(key));
+    if (unresolvedContrast) {
+      targetEvidenceKey = unresolvedContrast;
+    }
+  }
+
+  if (!targetEvidenceKey && missingEvidenceRank.length > 0) {
+    const nextMissing = missingEvidenceRank.find((x) => isQuestionStillUseful(x.key));
+    if (nextMissing) targetEvidenceKey = nextMissing.key;
+  }
+
+  if (!targetEvidenceKey) {
+    if (!hasMeaningfulAnswerInFamily("symptomDetails")) {
+      targetEvidenceKey = "main_symptom";
+    } else {
+      targetEvidenceKey = "details";
+    }
+  }
+
+  const rawFallback = selectHighValueFallbackQuestion(session);
+
+  const fallbackInput = normalizeTurnInput({ input: rawFallback.input });
+  const fallbackIntentKey = normalizeText(fallbackInput?.key || "");
+
+  const safeFallback =
+    fallbackIntentKey && hasMeaningfulAnswerInFamily(fallbackIntentKey)
+      ? {
+          assistant: "Tell me the next most noticeable thing you observe when the issue happens.",
+          input: { type: "text", key: "details", choices: [] },
+          questionMeta: {
+            goal: "disambiguate",
+            reason: "Fallback question was replaced because that evidence family is already answered.",
+            rulesUsed: ["safe_fallback_family_guard"],
+            eliminates: [],
+            narrowsTo: hypotheses.slice(0, 3).map((h) => h.component).filter(Boolean)
+          }
+        }
+      : rawFallback;
+
+  const baseQuestion = questionLibrary[targetEvidenceKey] || {
+    assistant: safeFallback.assistant,
+    input: safeFallback.input
+  };
+
+  const topName = top?.component || "top candidate";
+  const secondName = second?.component || null;
+
+  const goal = top && second ? "disambiguate" : "confirm";
+  const reason =
+    targetEvidenceKey === "details"
+      ? "A fresh direct observation is needed because current evidence is still too broad."
+      : secondName
+        ? `This helps separate ${topName} from ${secondName}.`
+        : `This helps verify whether ${topName} is actually the best fit.`;
+
+  const normalizedInput = normalizeTurnInput({ input: baseQuestion.input });
+  const assistant =
+    normalizeText(baseQuestion.assistant) ||
+    normalizeText(safeFallback.assistant) ||
+    "Tell me the next most noticeable thing you observe when the issue happens.";
+
+  const normalizedIntentKey = normalizeText(normalizedInput?.key || "");
+  if (normalizedIntentKey && hasMeaningfulAnswerInFamily(normalizedIntentKey)) {
+    return {
+      question: {
+        assistant: safeFallback.assistant,
+        input: normalizeTurnInput({ input: safeFallback.input })
+      },
+      questionMeta: safeFallback.questionMeta || {
+        goal: "disambiguate",
+        reason: "Fallback high value question selected because generated question duplicated already answered evidence.",
+        rulesUsed: ["fallback_question"],
+        eliminates: [],
+        narrowsTo: hypotheses.slice(0, 3).map((h) => h.component).filter(Boolean)
+      }
+    };
+  }
+
+  const questionMeta = {
+    goal,
+    reason,
+    rulesUsed: ["reasoning_missing_evidence"],
+    eliminates: [],
+    narrowsTo: hypotheses.slice(0, 3).map((h) => h.component).filter(Boolean)
+  };
+
+  const candidateTurn = {
+    assistant,
+    input: normalizedInput,
+    questionMeta
+  };
+
+  if (!isUsefulQuestion(candidateTurn)) {
+    return {
+      question: {
+        assistant: safeFallback.assistant,
+        input: normalizeTurnInput({ input: safeFallback.input })
+      },
+      questionMeta: safeFallback.questionMeta || {
+        goal: "disambiguate",
+        reason: "Fallback high value question selected because generated question was not useful.",
+        rulesUsed: ["fallback_question"],
+        eliminates: [],
+        narrowsTo: hypotheses.slice(0, 3).map((h) => h.component).filter(Boolean)
+      }
+    };
+  }
+
+  return {
+    question: {
+      assistant,
+      input: normalizedInput
+    },
+    questionMeta
+  };
+}
+
+function evaluateLockReadiness(session) {
+  ensureReasoning(session);
+
+  const hypotheses = Array.isArray(session.diagnosis.reasoning.hypotheses)
+    ? session.diagnosis.reasoning.hypotheses
+    : [];
+
+  const evidenceProfile = summarizeEvidenceProfile(session);
+  const top = hypotheses[0] || null;
+  const second = hypotheses[1] || null;
+
+  const result = {
+    ready: false,
+    reason: null,
+    missingEvidence: [],
+    conflictingEvidence: [],
+    supportingEvidence: []
+  };
+
+  if (!top) {
+    result.reason = "no_hypotheses";
+    session.diagnosis.reasoning.lockDecision = result;
+    return false;
+  }
+
+  const meaningfulEvidenceCount = Object.entries(evidenceProfile).filter(([, value]) => {
+    return value != null && value !== "" && value !== "not sure";
+  }).length;
+
+  const topConfidence = normalizeConfidence(top.confidence ?? 0);
+  const secondConfidence = normalizeConfidence(second?.confidence ?? 0);
+  const leadGap = topConfidence - secondConfidence;
+
+  const supportingEvidence = Array.isArray(top.supportingEvidence) ? top.supportingEvidence : [];
+  const conflictingEvidence = Array.isArray(top.conflictingEvidence) ? top.conflictingEvidence : [];
+  const missingEvidence = Array.isArray(top.missingEvidence) ? top.missingEvidence : [];
+
+  const hasStrongLead = topConfidence >= 78 && leadGap >= 15;
+  const hasEnoughEvidence = meaningfulEvidenceCount >= 3;
+  const hasDirectSupport = supportingEvidence.length >= 2;
+  const hasLowConflict = conflictingEvidence.length <= 1;
+
+  const notRejected = !session.diagnosis.rejectedHypotheses.includes(top.component);
+
+  if (!hasStrongLead) {
+    result.reason = "confidence_not_strong_enough";
+  } else if (!hasEnoughEvidence) {
+    result.reason = "not_enough_evidence";
+  } else if (!hasDirectSupport) {
+    result.reason = "not_enough_supporting_evidence";
+  } else if (!hasLowConflict) {
+    result.reason = "too_much_conflicting_evidence";
+  } else if (!notRejected) {
+    result.reason = "top_hypothesis_previously_rejected";
+  } else {
+    result.ready = true;
+    result.reason = "ready_to_lock";
+  }
+
+  result.missingEvidence = missingEvidence;
+  result.conflictingEvidence = conflictingEvidence;
+  result.supportingEvidence = supportingEvidence;
+
+  session.diagnosis.reasoning.lockDecision = result;
+  return result.ready;
+}
+
+async function buildDynamicRepairPlan({ session }) {
+  ensureReasoning(session);
+
+  const appliance = normalizeApplianceType(session.appliance);
+  const component =
+    session.partLookup?.suspectedComponent ||
+    session.diagnosis?.suggestedComponent ||
+    session.diagnosis?.component ||
+    "unknown_component";
+
+  const evidenceProfile = summarizeEvidenceProfile(session);
+  const topHypotheses = Array.isArray(session.diagnosis?.reasoning?.hypotheses)
+    ? session.diagnosis.reasoning.hypotheses.slice(0, 3).map((h) => ({
+        component: h.component,
+        confidence: h.confidence,
+        supportingEvidence: h.supportingEvidence,
+        conflictingEvidence: h.conflictingEvidence
+      }))
+    : [];
+
+  const systemPrompt = `
+You are generating a structured appliance repair plan for FixBuddy.
+
+Return only valid JSON:
+{
+  "tools": [""],
+  "steps": [
+    {
+      "id": "",
+      "title": "",
+      "powerRequired": "off" | "on",
+      "requiresConfirmKey": "",
+      "confirmPrompt": "",
+      "instructions": [""]
+    }
+  ]
+}
+
+Rules:
+Generate a safe, practical repair plan for the specific appliance and component.
+Use 5 to 8 steps when possible.
+The first step must be a safety and preparation step with powerRequired set to "off".
+Any disassembly, wiring, connector, or component removal step must have powerRequired set to "off".
+Only the final live verification step may require powerRequired set to "on".
+Each step must have:
+- short stable id
+- concise title
+- 2 to 5 instruction lines
+- a confirmPrompt if requiresConfirmKey is present
+Do not return paragraphs.
+Do not include warnings outside the step structure.
+Do not invent impossible actions.
+If certainty is low, prefer a cautious inspection and replacement workflow rather than over-specific claims.
+`.trim();
+
+  const userPayload = {
+    appliance,
+    component,
+    modelNumber: session.partLookup?.modelNumber || null,
+    partName: session.partLookup?.resolution?.partName || null,
+    oemPartNumber: session.partLookup?.resolution?.oemPartNumber || null,
+    symptomFamily: session.diagnosis?.reasoning?.symptomFamily || null,
+    evidenceProfile,
+    topHypotheses
+  };
+
+  const response = await client.responses.create({
+    model: "gpt-4o-mini",
+    input: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: JSON.stringify(userPayload) }
+    ],
+    text: { format: { type: "json_object" } }
+  });
+
+  let parsed = null;
+  try {
+    parsed = JSON.parse(response.output_text || "{}");
+  } catch {
+    return null;
+  }
+
+  if (!parsed || !Array.isArray(parsed.steps) || !parsed.steps.length) {
+    return null;
+  }
+
+  const rawTools = Array.isArray(parsed.tools) ? parsed.tools : [];
+  const rawSteps = Array.isArray(parsed.steps) ? parsed.steps : [];
+
+  const tools = rawTools
+    .map((x) => normalizeText(x))
+    .filter(Boolean)
+    .slice(0, 12);
+
+  const steps = rawSteps
+    .map((step, index) => {
+      const instructions = Array.isArray(step?.instructions)
+        ? step.instructions.map((x) => normalizeText(x)).filter(Boolean).slice(0, 5)
+        : [];
+
+      const title = normalizeText(step?.title) || `Step ${index + 1}`;
+      const id =
+        normalizeText(step?.id)
+          .toLowerCase()
+          .replace(/[^a-z0-9_]+/g, "_")
+          .replace(/^_+|_+$/g, "") || `step_${index + 1}`;
+
+      let powerRequired = normalizeText(step?.powerRequired).toLowerCase();
+      if (powerRequired !== "on" && powerRequired !== "off") {
+        powerRequired = index === rawSteps.length - 1 ? "on" : "off";
+      }
+
+      let requiresConfirmKey = normalizeText(step?.requiresConfirmKey);
+      if (!requiresConfirmKey) {
+        requiresConfirmKey = `confirm_${id}`;
+      }
+
+      const confirmPrompt =
+        normalizeText(step?.confirmPrompt) ||
+        `Confirm you completed: ${title}.`;
+
+      return {
+        id,
+        title,
+        powerRequired,
+        requiresConfirmKey,
+        confirmPrompt,
+        instructions
+      };
+    })
+    .filter((step) => step.instructions.length > 0);
+
+  if (!steps.length) return null;
+
+  const firstStep = steps[0];
+  if (firstStep.powerRequired !== "off") {
+    firstStep.powerRequired = "off";
+  }
+
+  if (!/safety|prep|prepare/i.test(firstStep.title)) {
+    firstStep.title = "Safety and prep";
+  }
+
+  const liveSteps = steps.filter((x) => x.powerRequired === "on");
+  if (liveSteps.length > 1) {
+    for (let i = 0; i < steps.length - 1; i += 1) {
+      steps[i].powerRequired = "off";
+    }
+    steps[steps.length - 1].powerRequired = "on";
+  }
+
+  return { tools, steps };
+}
+function normalizeRepairSteps(steps) {
+  if (!Array.isArray(steps)) return [];
+
+  const normalized = steps
+    .map((step, index) => {
+      const safeTitle = normalizeText(step?.title) || `Step ${index + 1}`;
+
+      const safeId =
+        normalizeText(step?.id)
+          .toLowerCase()
+          .replace(/[^a-z0-9_]+/g, "_")
+          .replace(/^_+|_+$/g, "") || `step_${index + 1}`;
+
+      let confirmKey = step?.requiresConfirmKey;
+
+      if (confirmKey === false || confirmKey == null) {
+        confirmKey = null;
+      } else if (confirmKey === true) {
+        confirmKey = `confirm_${safeId}`;
+      } else if (
+        typeof confirmKey === "string" &&
+        ["yes", "true", "ok", "confirm"].includes(confirmKey.trim().toLowerCase())
+      ) {
+        confirmKey = `confirm_${safeId}`;
+      } else if (typeof confirmKey === "string") {
+        confirmKey = normalizeText(confirmKey);
+        if (!confirmKey) confirmKey = null;
+      } else {
+        confirmKey = null;
+      }
+
+      let powerRequired = normalizeText(step?.powerRequired).toLowerCase();
+      if (powerRequired !== "on" && powerRequired !== "off") {
+        powerRequired = index === steps.length - 1 ? "on" : "off";
+      }
+
+      const instructions = Array.isArray(step?.instructions)
+        ? step.instructions.map((x) => normalizeText(x)).filter(Boolean).slice(0, 5)
+        : [];
+
+      const confirmPrompt =
+        normalizeText(step?.confirmPrompt) ||
+        `Confirm you completed: ${safeTitle}.`;
+
+      return {
+        id: safeId,
+        title: safeTitle,
+        powerRequired,
+        requiresConfirmKey: confirmKey,
+        instructions,
+        confirmPrompt
+      };
+    })
+    .filter((step) => step.instructions.length > 0);
+
+  if (!normalized.length) return [];
+
+  normalized[0].powerRequired = "off";
+
+  const liveSteps = normalized.filter((x) => x.powerRequired === "on");
+  if (liveSteps.length > 1) {
+    for (let i = 0; i < normalized.length - 1; i += 1) {
+      normalized[i].powerRequired = "off";
+    }
+    normalized[normalized.length - 1].powerRequired = "on";
+  }
+
+  return normalized;
+}
+/* =========================================================
+   Diagnosis memory and intent tracking
+========================================================= */
+
+function normalizeQuestionIntent(key) {
+  if (key == null) return "";
+
+  const raw = String(key).trim();
+  if (!raw) return "";
+
+  const normalized = raw
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[\s\-]+/g, "_")
+    .replace(/[^\w]/g, "_")
+    .toLowerCase()
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+  if (!normalized) return "";
+
+  const compact = normalized.replace(/_/g, "");
+  const tokens = normalized.split("_").filter(Boolean);
+
+  const aliasGroups = {
+    main_symptom: [
+      "main_symptom",
+      "mainsymptom",
+      "symptom",
+      "symptom_details",
+      "symptomdetails",
+      "symptom_detail",
+      "symptomdetail",
+      "issue_description",
+      "issuedescription",
+      "problem_description",
+      "problemdescription",
+      "description",
+      "details_of_problem",
+      "detailsofproblem",
+      "symptom_description",
+      "symptomdescription",
+      "problem",
+      "issue",
+      "primary_symptom",
+      "primarysymptom",
+      "observed_issue",
+      "observedissue"
+    ],
+
+    details: [
+      "details",
+      "detail",
+      "extra_details",
+      "extradetails",
+      "more_details",
+      "moredetails",
+      "additional_details",
+      "additionaldetails",
+      "followup_details",
+      "followupdetails",
+      "observation_details",
+      "observationdetails",
+      "user_notes",
+      "usernotes",
+      "additional_notes",
+      "additionalnotes",
+      "followup_notes",
+      "followupnotes"
+    ],
+
+    when_happens: [
+      "when_happens",
+      "whenhappens",
+      "when_occurs",
+      "whenoccurs",
+      "when_does_it_happen",
+      "whendoesithappen",
+      "when_it_happens",
+      "whenithappens",
+      "occurs_when",
+      "occurswhen",
+      "happens_when",
+      "happenswhen",
+      "timing_of_issue",
+      "timingofissue"
+    ],
+
+    timing: [
+      "timing",
+      "time_pattern",
+      "timepattern",
+      "frequency",
+      "intermittent_or_constant",
+      "intermittentorconstant",
+      "timing_pattern",
+      "timingpattern"
+    ],
+
+    location: [
+      "location",
+      "where",
+      "noise_location",
+      "noiselocation",
+      "symptom_location",
+      "symptomlocation",
+      "issue_location",
+      "issuelocation",
+      "problem_location",
+      "problemlocation",
+      "source_location",
+      "sourcelocation",
+      "where_is_it",
+      "whereisit",
+      "where_seen",
+      "whereseen",
+      "where_heard",
+      "whereheard"
+    ],
+
+    sound_type: [
+      "sound_type",
+      "soundtype",
+      "noise_type",
+      "noisetype",
+      "noise_kind",
+      "noisekind",
+      "sound_kind",
+      "soundkind",
+      "sound_description",
+      "sounddescription",
+      "noise_description",
+      "noisedescription",
+      "what_sound",
+      "whatsound",
+      "what_noise",
+      "whatnoise"
+    ],
+
+    error_codes: [
+      "error_codes",
+      "errorcodes",
+      "error_code",
+      "errorcode",
+      "codes_shown",
+      "codesshown",
+      "codes_present",
+      "codespresent",
+      "indicator_lights",
+      "indicatorlights",
+      "blink_codes",
+      "blinkcodes",
+      "fault_codes",
+      "faultcodes",
+      "display_codes",
+      "displaycodes"
+    ],
+
+    door_stops_noise: [
+      "door_stops_noise",
+      "doorstopsnoise",
+      "noise_stops_when_door_opens",
+      "noisestopswhendooropens",
+      "stops_when_door_opens",
+      "stopswhendooropens",
+      "door_open_changes_noise",
+      "dooropenchangesnoise",
+      "noise_changes_when_door_opens",
+      "noisechangeswhendooropens",
+      "open_door_changes_noise",
+      "opendoorchangesnoise"
+    ],
+
+    door_switch_response: [
+      "door_switch_response",
+      "doorswitchresponse",
+      "door_latch_check",
+      "doorlatchcheck",
+      "door_click",
+      "doorclick",
+      "door_latch_click",
+      "doorlatchclick",
+      "switch_click",
+      "switchclick",
+      "latch_response",
+      "latchresponse",
+      "door_response",
+      "doorresponse"
+    ],
+
+    drum_spin_status: [
+      "drum_spin_status",
+      "drumspinstatus",
+      "drum_spins",
+      "drumspins",
+      "drum_does_spin",
+      "drumdoesspin",
+      "drum_turning",
+      "drumturning",
+      "drum_rotates",
+      "drumrotates",
+      "drum_motion",
+      "drummotion"
+    ],
+
+    drum_moves_by_hand: [
+      "drum_moves_by_hand",
+      "drummovesbyhand",
+      "drum_turns_by_hand",
+      "drumturnsbyhand",
+      "manual_drum_movement",
+      "manualdrummovement",
+      "turns_by_hand",
+      "turnsbyhand",
+      "moves_by_hand",
+      "movesbyhand",
+      "drum_free_movement",
+      "drumfreemovement"
+    ],
+
+    door_switch_held_effect: [
+      "door_switch_held_effect",
+      "doorswitchheldeffect",
+      "door_switch_change",
+      "doorswitchchange",
+      "manual_door_switch_effect",
+      "manualdoorswitcheffect",
+      "holding_door_switch_effect",
+      "holdingdoorswitcheffect",
+      "door_switch_effect",
+      "doorswitcheffect"
+    ],
+
+    frost_buildup: [
+      "frost_buildup",
+      "frostbuildup",
+      "ice_buildup",
+      "icebuildup",
+      "freezer_frost",
+      "freezerfrost",
+      "coil_frost",
+      "coilfrost",
+      "back_wall_frost",
+      "backwallfrost"
+    ],
+
+    airflow_present: [
+      "airflow_present",
+      "airflowpresent",
+      "air_flow",
+      "airflow_ok",
+      "airflowok",
+      "air_moving",
+      "airmoving",
+      "vent_airflow",
+      "ventairflow",
+      "fan_airflow",
+      "fanairflow"
+    ],
+
+    compressor_running: [
+      "compressor_running",
+      "compressorrunning",
+      "compressor_on",
+      "compressoron",
+      "compressor_status",
+      "compressorstatus",
+      "is_compressor_running",
+      "iscompressorrunning"
+    ],
+
+    leak_location: [
+      "leak_location",
+      "leaklocation",
+      "water_leak_location",
+      "waterleaklocation",
+      "where_is_the_leak",
+      "whereistheleak",
+      "leak_source_location",
+      "leaksourcelocation"
+    ],
+
+    freezer_temp: [
+      "freezer_temp",
+      "freezertemp",
+      "freezer_temperature",
+      "freezertemperature",
+      "temp_freezer",
+      "tempfreezer",
+      "freezer_coldness",
+      "freezercoldness"
+    ],
+
+    fridge_temp: [
+      "fridge_temp",
+      "fridgetemp",
+      "fridge_temperature",
+      "fridgetemperature",
+      "refrigerator_temp",
+      "refrigeratortemp",
+      "refrigerator_temperature",
+      "refrigeratortemperature",
+      "temp_fridge",
+      "tempfridge"
+    ],
+
+    cooling_pattern: [
+      "cooling_pattern",
+      "coolingpattern",
+      "cooling_behavior",
+      "coolingbehavior",
+      "cooling_issue_pattern",
+      "coolingissuepattern",
+      "temperature_pattern",
+      "temperaturepattern"
+    ],
+
+    ice_maker_involved: [
+      "ice_maker_involved",
+      "icemakerinvolved",
+      "ice_maker",
+      "icemaker",
+      "ice_system_involved",
+      "icesysteminvolved",
+      "during_ice_maker",
+      "duringicemaker"
+    ],
+
+    rear_heat_level: [
+      "rear_heat_level",
+      "rearheatlevel",
+      "back_heat_level",
+      "backheatlevel",
+      "rear_heat",
+      "rearheat",
+      "back_heat",
+      "backheat",
+      "compressor_area_heat",
+      "compressorareaheat"
+    ],
+
+    fan_spins_by_hand: [
+      "fan_spins_by_hand",
+      "fanspinsbyhand",
+      "fan_turns_by_hand",
+      "fanturnsbyhand",
+      "manual_fan_spin",
+      "manualfanspin",
+      "fan_moves_by_hand",
+      "fanmovesbyhand"
+    ],
+
+    clicking: [
+      "clicking",
+      "click_sound",
+      "clicksound",
+      "rapid_clicking",
+      "rapidclicking"
+    ],
+
+    humming: [
+      "humming",
+      "buzzing_hum",
+      "buzzinghum",
+      "low_hum",
+      "lowhum"
+    ],
+
+    power_state: [
+      "power_state",
+      "powerstate",
+      "on_off_state",
+      "onoffstate",
+      "plugged_in_state",
+      "pluggedinstate"
+    ],
+
+    appliance_type: [
+      "appliance_type",
+      "appliancetype",
+      "device_type",
+      "devicetype",
+      "machine_type",
+      "machinetype"
+    ],
+
+    brand: [
+      "brand",
+      "manufacturer",
+      "make"
+    ],
+
+    model_number: [
+      "model_number",
+      "modelnumber",
+      "unit_model",
+      "unitmodel"
+    ],
+
+    serial_number: [
+      "serial_number",
+      "serialnumber",
+      "unit_serial",
+      "unitserial"
+    ],
+
+    part_label_number: [
+      "part_label_number",
+      "partlabelnumber",
+      "motor_label_number",
+      "motorlabelnumber",
+      "sticker_number",
+      "stickernumber",
+      "label_number",
+      "labelnumber",
+      "part_number_on_label",
+      "partnumberonlabel"
+    ]
+  };
+
+  const aliasMap = {};
+  for (const [canonical, aliases] of Object.entries(aliasGroups)) {
+    aliasMap[canonical] = canonical;
+    aliasMap[canonical.replace(/_/g, "")] = canonical;
+
+    for (const alias of aliases) {
+      aliasMap[alias] = canonical;
+      aliasMap[alias.replace(/_/g, "")] = canonical;
+    }
+  }
+
+  if (aliasMap[normalized]) return aliasMap[normalized];
+  if (aliasMap[compact]) return aliasMap[compact];
+
+  const has = (word) => tokens.includes(word);
+  const hasAny = (...words) => words.some((w) => tokens.includes(w));
+
+  if ((hasAny("symptom", "issue", "problem") && hasAny("description", "details", "detail")) ||
+      (has("description") && hasAny("symptom", "issue", "problem"))) {
+    return "main_symptom";
+  }
+
+  if ((hasAny("extra", "more", "additional", "followup") && hasAny("detail", "details", "note", "notes", "observation")) ||
+      (has("user") && hasAny("note", "notes"))) {
+    return "details";
+  }
+
+  if (has("when") && hasAny("happens", "happen", "occurs", "occur")) {
+    return "when_happens";
+  }
+
+  if (hasAny("timing", "frequency") || (has("intermittent") && has("constant"))) {
+    return "timing";
+  }
+
+  if (hasAny("location", "where") || (has("source") && hasAny("location", "where"))) {
+    return "location";
+  }
+
+  if ((hasAny("sound", "noise") && hasAny("type", "kind", "description")) ||
+      (has("what") && hasAny("sound", "noise"))) {
+    return "sound_type";
+  }
+
+  if ((hasAny("error", "fault", "blink", "display", "indicator") && hasAny("code", "codes", "light", "lights")) ||
+      (has("error") && hasAny("code", "codes"))) {
+    return "error_codes";
+  }
+
+  if (has("door") && hasAny("stops", "stop", "opens", "open") && has("noise")) {
+    return "door_stops_noise";
+  }
+
+  if ((has("door") && hasAny("switch", "latch")) ||
+      (has("latch") && has("click")) ||
+      (has("switch") && has("click"))) {
+    return "door_switch_response";
+  }
+
+  if (has("drum") && hasAny("spin", "spins", "turning", "rotates", "rotation", "motion")) {
+    return "drum_spin_status";
+  }
+
+  if (has("drum") && has("hand")) {
+    return "drum_moves_by_hand";
+  }
+
+  if (has("door") && has("switch") && hasAny("held", "hold", "effect", "change")) {
+    return "door_switch_held_effect";
+  }
+
+  if (hasAny("frost", "ice") && hasAny("buildup", "build", "build_up")) {
+    return "frost_buildup";
+  }
+
+  if (has("airflow") || (has("air") && hasAny("moving", "flow")) || (has("vent") && has("airflow"))) {
+    return "airflow_present";
+  }
+
+  if (has("compressor") && hasAny("running", "on", "status")) {
+    return "compressor_running";
+  }
+
+  if (has("leak") && hasAny("location", "source", "where")) {
+    return "leak_location";
+  }
+
+  if ((has("freezer") && hasAny("temp", "temperature", "coldness")) ||
+      (has("temp") && has("freezer"))) {
+    return "freezer_temp";
+  }
+
+  if ((hasAny("fridge", "refrigerator") && hasAny("temp", "temperature")) ||
+      (has("temp") && hasAny("fridge", "refrigerator"))) {
+    return "fridge_temp";
+  }
+
+  if (has("cooling") && hasAny("pattern", "behavior")) {
+    return "cooling_pattern";
+  }
+
+  if (has("ice") && has("maker")) {
+    return "ice_maker_involved";
+  }
+
+  if ((hasAny("rear", "back") && has("heat")) ||
+      (has("compressor") && has("heat"))) {
+    return "rear_heat_level";
+  }
+
+  if (has("fan") && has("hand")) {
+    return "fan_spins_by_hand";
+  }
+
+  if (has("clicking") || (has("rapid") && has("clicking"))) {
+    return "clicking";
+  }
+
+  if (has("humming") || (has("buzzing") && has("hum"))) {
+    return "humming";
+  }
+
+  if ((has("power") && hasAny("state", "status")) ||
+      (has("plugged") && has("state")) ||
+      (has("on") && has("off") && has("state"))) {
+    return "power_state";
+  }
+
+  if ((has("appliance") && has("type")) ||
+      (has("device") && has("type")) ||
+      (has("machine") && has("type"))) {
+    return "appliance_type";
+  }
+
+  if (normalized === "brand" || normalized === "manufacturer" || normalized === "make") {
+    return "brand";
+  }
+
+  if (normalized === "model" || normalized === "model_number" || normalized === "unit_model") {
+    return "model_number";
+  }
+
+  if (normalized === "serial" || normalized === "serial_number" || normalized === "unit_serial") {
+    return "serial_number";
+  }
+
+  if ((hasAny("label", "sticker") && has("number")) ||
+      (has("part") && has("label")) ||
+      (has("motor") && has("label"))) {
+    return "part_label_number";
+  }
+
+  return normalized;
+}
+
+function markQuestionAsked(session, key) {
+  ensureDiagnosisFields(session);
+  const intent = normalizeQuestionIntent(key);
+  if (!intent) return;
+
+  if (!Array.isArray(session.diagnosis.askedQuestionKeys)) {
+    session.diagnosis.askedQuestionKeys = [];
+  }
+
+  if (!session.diagnosis.askedQuestionKeys.includes(intent)) {
+    session.diagnosis.askedQuestionKeys.push(intent);
+  }
+}
+
+function alreadyAskedQuestion(session, key) {
+  ensureDiagnosisFields(session);
+  const intent = normalizeQuestionIntent(key);
+  if (!intent) return false;
+
+  const list = Array.isArray(session?.diagnosis?.askedQuestionKeys)
+    ? session.diagnosis.askedQuestionKeys
+    : [];
+
+  return list.includes(intent);
+}
+
+function markAnswerCaptured(session, key, value) {
+  ensureDiagnosisFields(session);
+  const intent = normalizeQuestionIntent(key);
+  if (!intent) return;
+
+  if (!Array.isArray(session.diagnosis.answeredKeys)) session.diagnosis.answeredKeys = [];
+  if (!session.diagnosis.answeredKeys.includes(intent)) {
+    session.diagnosis.answeredKeys.push(intent);
+  }
+
+  if (!session.diagnosis.answersByIntent || typeof session.diagnosis.answersByIntent !== "object") {
+    session.diagnosis.answersByIntent = {};
+  }
+
+  session.diagnosis.answersByIntent[intent] = value;
+}
+
+function hasMeaningfulAnswerByIntent(session, keyOrIntent) {
+  ensureDiagnosisFields(session);
+  const intent = normalizeQuestionIntent(keyOrIntent);
+  const v = session?.diagnosis?.answersByIntent?.[intent];
+
+  if (typeof v === "string") {
+    const t = v.trim().toLowerCase();
+    return t.length > 0 && t !== "not sure";
+  }
+  if (typeof v === "number") return Number.isFinite(v);
+  if (typeof v === "boolean") return true;
+  return v != null;
+}
+
+function setCurrentQuestion(session, inputObj) {
+  ensureDiagnosisFields(session);
+
+  if (!inputObj || inputObj.type === "none") {
+    session.diagnosis.currentQuestion = null;
+    return;
+  }
+
+  session.diagnosis.currentQuestion = {
+    key: normalizeText(inputObj.key || "details") || "details",
+    type: normalizeText(inputObj.type || "text") || "text",
+    choices: Array.isArray(inputObj.choices) ? inputObj.choices : []
+  };
+}
+
+function detectHypothesisRejection(message) {
+  const t = normalizeText(message).toLowerCase();
+  if (!t) return false;
+
+  return (
+    t.includes("troubleshoot further") ||
+    t.includes("keep troubleshooting") ||
+    t.includes("want to troubleshoot") ||
+    t.includes("not ready to replace") ||
+    t.includes("do not want to proceed") ||
+    t.includes("don't want to proceed") ||
+    t.includes("that doesn't sound right") ||
+    t.includes("that does not sound right") ||
+    t.includes("i don't think that's it") ||
+    t.includes("i dont think that's it") ||
+    t.includes("i dont think thats it") ||
+    t.includes("i don't think thats it") ||
+    t.includes("that is not the issue") ||
+    t.includes("not yet")
+  );
+}
+function isExplicitDiagnosisProposalContext(session) {
+  const dx = session?.diagnosis || {};
+  const currentQuestion = dx.currentQuestion;
+
+  if (dx.stage === "locked") return true;
+  if (session?.mode === "part_lookup") return true;
+  if (session?.mode === "repair") return true;
+
+  if (!currentQuestion && dx.proposedHypothesis && normalizeConfidence(dx.confidence ?? 0) >= 70) {
+    return true;
+  }
+
+  return false;
 }
 
 function bindMessageToPendingQuestion(session, incomingMessage) {
@@ -329,7 +2509,11 @@ function bindMessageToPendingQuestion(session, incomingMessage) {
   if (!key) return null;
 
   const type = normalizeText(q.type || q.input?.type || "");
-  const choices = Array.isArray(q.choices) ? q.choices : Array.isArray(q.input?.choices) ? q.input.choices : [];
+  const choices = Array.isArray(q.choices)
+    ? q.choices
+    : Array.isArray(q.input?.choices)
+      ? q.input.choices
+      : [];
 
   if (type === "choice") {
     const coerced = coerceChoiceAnswer(msg, choices);
@@ -341,53 +2525,141 @@ function bindMessageToPendingQuestion(session, incomingMessage) {
   }
 
   return { key, value: msg, usedCoercion: false };
-}
-
-/* =========================================================
+}/* =========================================================
    Diagnosis question quality enforcement
 ========================================================= */
-
-function markAsked(session, key) {
-  ensureDiagnosisFields(session);
-  const k = String(key || "").trim();
-  if (!k) return;
-  if (!Array.isArray(session.diagnosis.askedKeys)) session.diagnosis.askedKeys = [];
-  if (!session.diagnosis.askedKeys.includes(k)) session.diagnosis.askedKeys.push(k);
-}
-
-function alreadyAsked(session, key) {
-  ensureDiagnosisFields(session);
-  const k = String(key || "").trim();
-  if (!k) return false;
-  const list = Array.isArray(session?.diagnosis?.askedKeys) ? session.diagnosis.askedKeys : [];
-  return list.includes(k);
-}
 
 function selectHighValueFallbackQuestion(session) {
   const a = String(session.appliance || "").toLowerCase();
   const cat = String(session.issueCategory || "").toLowerCase();
 
   if (a === "refrigerator" && cat === "noise") {
+    if (!hasMeaningfulAnswerByIntent(session, "whenHappens")) {
+      return {
+        assistant: "When does the noise happen most: only when cooling, only after the door closes, or constantly?",
+        input: { type: "choice", key: "whenHappens", choices: ["during cooling", "after door closes", "constant"] },
+        questionMeta: {
+          goal: "disambiguate",
+          reason: "This separates fan motor noise from compressor mounts and from ice maker related noise.",
+          rulesUsed: ["fridge_noise_top_causes"],
+          eliminates: ["some unrelated causes"],
+          narrowsTo: ["condenser fan motor", "evaporator fan motor", "compressor or mounts", "ice maker or auger"]
+        }
+      };
+    }
+
     return {
-      assistant: "When does the noise happen most: only when cooling, only after the door closes, or constantly?",
-      input: { type: "choice", key: "whenHappens", choices: ["during cooling", "after door closes", "constant"] },
+      assistant: "Where is the noise loudest: back bottom, back top, inside freezer, inside fridge, or cannot tell?",
+      input: {
+        type: "choice",
+        key: "location",
+        choices: ["back bottom", "back top", "inside freezer", "inside fridge", "cannot tell"]
+      },
       questionMeta: {
         goal: "disambiguate",
-        reason: "This separates fan motor noise from compressor mounts and from ice maker related noise.",
-        rulesUsed: ["fridge_noise_top_causes"],
+        reason: "Location helps separate compressor area noise from evaporator area noise.",
+        rulesUsed: ["fridge_noise_location_split"],
         eliminates: ["some unrelated causes"],
-        narrowsTo: ["condenser fan motor", "evaporator fan motor", "compressor or mounts", "ice maker or auger"]
+        narrowsTo: ["condenser fan motor", "evaporator fan motor", "compressor or mounts"]
+      }
+    };
+  }
+
+  if (a === "dryer") {
+    if (!hasMeaningfulAnswerByIntent(session, "drumMovesByHand")) {
+      return {
+        assistant: "With the dryer unplugged, can you turn the drum by hand, and does it move freely or feel stuck?",
+        input: { type: "choice", key: "drumMovesByHand", choices: ["moves freely", "feels stuck", "not sure"] },
+        questionMeta: {
+          goal: "disambiguate",
+          reason: "This helps separate a motor issue from a seized drum, idler, or belt path issue.",
+          rulesUsed: ["dryer_no_start_motor_belt_split"],
+          eliminates: ["some control and switch causes"],
+          narrowsTo: ["drive motor", "belt path", "idler or drum jam"]
+        }
+      };
+    }
+
+    if (!hasMeaningfulAnswerByIntent(session, "doorSwitchHeldEffect")) {
+      return {
+        assistant: "When you press and hold the door switch, what changes do you notice?",
+        input: {
+          type: "choice",
+          key: "doorSwitchHeldEffect",
+          choices: ["nothing changes", "heater comes on", "drum tries to move", "not sure"]
+        },
+        questionMeta: {
+          goal: "disambiguate",
+          reason: "This checks what parts of the start circuit respond without pushing a specific component too early.",
+          rulesUsed: ["dryer_switch_effect_split"],
+          eliminates: ["some unrelated causes"],
+          narrowsTo: ["door switch path", "motor start path", "control path"]
+        }
+      };
+    }
+
+    if (!hasMeaningfulAnswerByIntent(session, "soundType")) {
+      return {
+        assistant: "What sound do you hear when you press start: a click, a hum or buzz, no sound, or something else?",
+        input: { type: "choice", key: "soundType", choices: ["click", "hum or buzz", "no sound", "other", "not sure"] },
+        questionMeta: {
+          goal: "disambiguate",
+          reason: "The sound pattern helps separate a motor start issue from a switch or control issue.",
+          rulesUsed: ["dryer_no_start_sound_split"],
+          eliminates: ["some unrelated causes"],
+          narrowsTo: ["drive motor", "start circuit", "door switch", "control board"]
+        }
+      };
+    }
+
+    if (!hasMeaningfulAnswerByIntent(session, "main_symptom")) {
+      return {
+        assistant: "What is the single main symptom right now, and when does it happen?",
+        input: { type: "text", key: "symptomDetails", choices: [] },
+        questionMeta: {
+          goal: "disambiguate",
+          reason: "A clear symptom and timing lets us narrow to a component and choose the next safe check.",
+          rulesUsed: ["general_triage"],
+          eliminates: [],
+          narrowsTo: ["top_likely_components"]
+        }
+      };
+    }
+
+    return {
+      assistant: "What is the next most noticeable thing you observe when you press Start?",
+      input: { type: "text", key: "details", choices: [] },
+      questionMeta: {
+        goal: "disambiguate",
+        reason: "A fresh observation is better than repeating intake once symptom details are captured.",
+        rulesUsed: ["general_followup"],
+        eliminates: [],
+        narrowsTo: ["top_likely_components"]
+      }
+    };
+  }
+
+  if (!hasMeaningfulAnswerByIntent(session, "main_symptom")) {
+    return {
+      assistant: "What is the single main symptom right now, and when does it happen?",
+      input: { type: "text", key: "symptomDetails", choices: [] },
+      questionMeta: {
+        goal: "disambiguate",
+        reason: "A clear symptom and timing lets us narrow to a component and choose the next safe check.",
+        rulesUsed: ["general_triage"],
+        eliminates: [],
+        narrowsTo: ["top_likely_components"]
       }
     };
   }
 
   return {
-    assistant: "What is the single main symptom right now, and when does it happen?",
-    input: { type: "text", key: "symptomDetails", choices: [] },
+    assistant: "Tell me the next most noticeable thing you observe when the issue happens.",
+    input: { type: "text", key: "details", choices: [] },
     questionMeta: {
       goal: "disambiguate",
-      reason: "A clear symptom and timing lets us narrow to a component and choose the next safe check.",
-      rulesUsed: ["general_triage"],
+      reason: "A fresh observation is better than repeating intake once core symptom details are captured.",
+      rulesUsed: ["general_followup"],
       eliminates: [],
       narrowsTo: ["top_likely_components"]
     }
@@ -418,12 +2690,15 @@ function isUsefulQuestion(turn) {
   ];
   const banned = bannedTopicWords.some((w) => assistant.includes(w));
 
+  const leadingPhrases = ["would you like to proceed with replacing", "proceed with replacing", "faulty door switch"];
+  const tooLeading = leadingPhrases.some((p) => assistant.includes(p));
+
   const inputOk =
     input.type === "text" ||
     (input.type === "choice" && Array.isArray(input.choices) && input.choices.length >= 2 && input.choices.length <= 6) ||
     input.type === "none";
 
-  return goalOk && reasonOk && narrowsOk && !banned && inputOk;
+  return goalOk && reasonOk && narrowsOk && !banned && !tooLeading && inputOk;
 }
 
 function normalizeTurnInput(turn) {
@@ -439,11 +2714,13 @@ function normalizeTurnInput(turn) {
   if (!["text", "choice", "none"].includes(input.type)) input.type = "text";
   if (!input.key && input.type !== "none") input.key = "details";
   if (input.type !== "choice") input.choices = [];
+
   if (input.type === "choice") {
     input.choices = (Array.isArray(input.choices) ? input.choices : [])
       .map((x) => normalizeText(x))
       .filter(Boolean)
       .slice(0, 6);
+
     if (input.choices.length < 2) {
       input.type = "text";
       input.choices = [];
@@ -501,6 +2778,7 @@ function getScriptedNextQuestion(session) {
     for (const q of order) {
       if (typeof answers[q.key] === "undefined") return q;
     }
+
     return null;
   }
 
@@ -647,15 +2925,19 @@ function setSafetyProfile(session, { requiredAcks = [], blockRepair = false, rea
 function applySafetyAcks(session, acks) {
   ensureSafetyProfile(session);
   const list = Array.isArray(acks) ? acks : [];
+
   for (const k of list) {
     const key = normalizeText(k);
     if (!key) continue;
     session.safetyProfile.acknowledged[key] = true;
   }
+
   session.safetyProfile.updatedAt = new Date().toISOString();
+
   const allMet = (session.safetyProfile.requiredAcks || []).every(
     (k) => session.safetyProfile.acknowledged?.[k] === true
   );
+
   session.safetyProfile.status = allMet ? "acked" : "needs_ack";
 }
 
@@ -732,13 +3014,12 @@ function computeDynamicSafetyFromText({ appliance, issueCategory, symptoms, user
     reason,
     prompt
   };
-}
-
-function safetyGateInfo(session) {
+}function safetyGateInfo(session) {
   ensureSafetyProfile(session);
   const sp = session.safetyProfile;
   const required = Array.isArray(sp.requiredAcks) ? sp.requiredAcks : [];
   const missing = required.filter((k) => sp.acknowledged?.[k] !== true);
+
   return {
     status: sp.status,
     requiredAcks: required,
@@ -815,8 +3096,20 @@ function ensureDiagnosisFields(session) {
 
     stage: "intake",
     currentQuestion: null,
-    askedKeys: [],
-    locked: false
+    locked: false,
+
+    askedQuestionKeys: [],
+    answeredKeys: [],
+    answersByIntent: {},
+    rejectedHypotheses: [],
+    proposedHypothesis: null,
+    currentBranch: null,
+    narrowedBranch: null,
+
+    conversation: {
+      turns: [],
+      lastTurnAt: null
+    }
   };
 
   const dx = session.diagnosis;
@@ -836,19 +3129,23 @@ function ensureDiagnosisFields(session) {
 
   if (!dx.stage) dx.stage = "intake";
   if (typeof dx.currentQuestion === "undefined") dx.currentQuestion = null;
-  if (!Array.isArray(dx.askedKeys)) dx.askedKeys = [];
   if (typeof dx.locked !== "boolean") dx.locked = false;
+
+  if (!Array.isArray(dx.askedQuestionKeys)) dx.askedQuestionKeys = [];
+  if (!Array.isArray(dx.answeredKeys)) dx.answeredKeys = [];
+  if (!dx.answersByIntent || typeof dx.answersByIntent !== "object") dx.answersByIntent = {};
+  if (!Array.isArray(dx.rejectedHypotheses)) dx.rejectedHypotheses = [];
+  if (typeof dx.proposedHypothesis === "undefined") dx.proposedHypothesis = null;
+  if (typeof dx.currentBranch === "undefined") dx.currentBranch = null;
+  if (typeof dx.narrowedBranch === "undefined") dx.narrowedBranch = null;
+
+  dx.conversation = dx.conversation || { turns: [], lastTurnAt: null };
+  if (!Array.isArray(dx.conversation.turns)) dx.conversation.turns = [];
+  if (typeof dx.conversation.lastTurnAt === "undefined") dx.conversation.lastTurnAt = null;
 }
 
 function ensureDiagnosisConversation(session) {
   ensureDiagnosisFields(session);
-  session.diagnosis.conversation = session.diagnosis.conversation || {
-    turns: [],
-    lastTurnAt: null
-  };
-  const c = session.diagnosis.conversation;
-  if (!Array.isArray(c.turns)) c.turns = [];
-  if (typeof c.lastTurnAt === "undefined") c.lastTurnAt = null;
 }
 
 function pushDiagTurn(session, role, content) {
@@ -923,6 +3220,7 @@ function buildSuccessResponse(session, payload) {
 function buildSafetyGateResponse(session, gate) {
   ensureSafetyProfile(session);
   const requiredAcks = Array.isArray(gate?.requiredAcks) ? gate.requiredAcks : safetyGateInfo(session).missingAcks;
+
   return {
     ok: false,
     code: "SAFETY_GATE",
@@ -1049,6 +3347,12 @@ Otherwise set mode to "diagnose" and ask ONE question.
 The question must be tied to narrowing to a component in questionMeta.narrowsTo.
 Keep assistant concise.
 If input.type is "choice", provide 2 to 6 choices.
+
+Critical constraints:
+Do not ask a question that is semantically equivalent to a previously asked question.
+If the user has already described the main symptom, do not ask for the main symptom again.
+Do not ask leading questions that suggest a faulty component by name unless confidence is high and competing causes are clearly weaker.
+If the user declined a proposed repair or said they want to troubleshoot further, do not repeat that same repair proposal. Ask the next best discriminating question from a different branch.
 `.trim();
 
   const dx = session.diagnosis || {};
@@ -1064,10 +3368,16 @@ If input.type is "choice", provide 2 to 6 choices.
     symptoms,
     userText: normalizeText(userText),
     answers,
+    answersByIntent: dx.answersByIntent || {},
     priorTurns: turns,
     priorLikelyCauses: dx.likelyCauses || [],
     priorSafetyFlags: dx.safetyFlags || [],
-    alreadyAskedKeys: Array.isArray(dx.askedKeys) ? dx.askedKeys : []
+    alreadyAskedIntents: Array.isArray(dx.askedQuestionKeys) ? dx.askedQuestionKeys : [],
+    answeredIntents: Array.isArray(dx.answeredKeys) ? dx.answeredKeys : [],
+    rejectedHypotheses: Array.isArray(dx.rejectedHypotheses) ? dx.rejectedHypotheses : [],
+    proposedHypothesis: dx.proposedHypothesis || null,
+    currentBranch: dx.currentBranch || null,
+    narrowedBranch: dx.narrowedBranch || null
   };
 
   const response = await client.responses.create({
@@ -1117,8 +3427,15 @@ async function createDiagSession({ appliance = null, issueCategory = null, sympt
 
       stage: "intake",
       currentQuestion: null,
-      askedKeys: [],
       locked: false,
+
+      askedQuestionKeys: [],
+      answeredKeys: [],
+      answersByIntent: {},
+      rejectedHypotheses: [],
+      proposedHypothesis: null,
+      currentBranch: null,
+      narrowedBranch: null,
 
       conversation: {
         turns: [],
@@ -1210,6 +3527,7 @@ async function createDiagSession({ appliance = null, issueCategory = null, sympt
     userDescription: session.diagnosis.userDescription,
     safetyFlags: session.diagnosis.safetyFlags
   });
+
   setSafetyProfile(session, safety);
 
   await sessionStore.setSession(session);
@@ -1219,10 +3537,12 @@ async function createDiagSession({ appliance = null, issueCategory = null, sympt
 async function getSessionById(sessionId) {
   const session = await sessionStore.getSession(sessionId);
   if (!session) return null;
+
   ensurePhase4Fields(session);
   ensureDiagnosisFields(session);
   ensureDiagnosisConversation(session);
   ensureSafetyProfile(session);
+
   return session;
 }
 
@@ -1293,6 +3613,7 @@ const PART_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 function normalizeKeyPiece(v) {
   return (v || "").toString().trim().toUpperCase();
 }
+
 function makePartResolveCacheKey(pl) {
   const keyObj = {
     brand: normalizeKeyPiece(pl.brand),
@@ -1303,18 +3624,23 @@ function makePartResolveCacheKey(pl) {
   };
   return JSON.stringify(keyObj);
 }
+
 function cacheGet(key) {
   const hit = partResolveCache.get(key);
   if (!hit) return null;
+
   if (Date.now() - hit.savedAtMs > PART_CACHE_TTL_MS) {
     partResolveCache.delete(key);
     return null;
   }
+
   return hit.payload;
 }
+
 function cacheSet(key, payload) {
   partResolveCache.set(key, { savedAtMs: Date.now(), payload });
 }
+
 function buildInputsUsed(pl, cacheKey) {
   return {
     brand: pl.brand || null,
@@ -1324,9 +3650,7 @@ function buildInputsUsed(pl, cacheKey) {
     partLabelNumber: pl.componentIdentifiers?.partLabelNumber || null,
     cacheKey
   };
-}
-
-/* =========================================================
+}/* =========================================================
    Repair templates
 ========================================================= */
 
@@ -1489,8 +3813,10 @@ function canAdvanceRepair(session, step) {
   if (!step) return { ok: false, reason: "no_step" };
   const key = step.requiresConfirmKey;
   if (!key) return { ok: true };
+
   const val = session.repairFlow?.confirmations?.[key];
   if (val === true) return { ok: true };
+
   return {
     ok: false,
     reason: "needs_confirmation",
@@ -1778,6 +4104,7 @@ app.post("/session/start", async (req, res) => {
     session.diagnosis.status = "running";
     session.diagnosis.stage = "intake";
     pushDiagTurn(session, "user", seededText);
+    markAnswerCaptured(session, "symptomDetails", seededText);
 
     const safety = computeDynamicSafetyFromText({
       appliance: session.appliance,
@@ -1786,6 +4113,7 @@ app.post("/session/start", async (req, res) => {
       userDescription: session.diagnosis.userDescription,
       safetyFlags: session.diagnosis.safetyFlags
     });
+
     setSafetyProfile(session, safety);
   }
 
@@ -1863,10 +4191,14 @@ app.post("/session/diagnose", requireSession, async (req, res) => {
     if (typeof userDescription === "string" && userDescription.trim()) {
       session.diagnosis.userDescription = userDescription.trim();
       pushDiagTurn(session, "user", userDescription.trim());
+      markAnswerCaptured(session, "symptomDetails", userDescription.trim());
     }
 
     if (answers && typeof answers === "object") {
       session.diagnosis.answers = { ...(session.diagnosis.answers || {}), ...answers };
+      for (const [k, v] of Object.entries(answers)) {
+        markAnswerCaptured(session, k, v);
+      }
     }
 
     if (!session.diagnosis.createdAt) session.diagnosis.createdAt = new Date().toISOString();
@@ -1948,10 +4280,41 @@ app.post("/session/diagnose", requireSession, async (req, res) => {
     return res.status(500).json({ error: "Internal error", detail: err?.message || "unknown" });
   }
 });
+function syncReasoningEvidenceFromAnswers(session) {
+  ensureReasoning(session);
+  ensureDiagnosisFields(session);
 
+  const answersByIntent =
+    session?.diagnosis?.answersByIntent && typeof session.diagnosis.answersByIntent === "object"
+      ? session.diagnosis.answersByIntent
+      : {};
+
+  let evidence = Array.isArray(session.diagnosis.reasoning.evidence)
+    ? session.diagnosis.reasoning.evidence
+    : [];
+
+  for (const [key, value] of Object.entries(answersByIntent)) {
+    if (value == null) continue;
+    if (typeof value === "string" && !normalizeText(value)) continue;
+
+    evidence = upsertEvidenceFact(
+      evidence,
+      makeEvidenceFact({
+        key,
+        value,
+        source: "answers_sync",
+        confidence: 95,
+        raw: value
+      })
+    );
+  }
+
+  session.diagnosis.reasoning.evidence = evidence;
+}
 app.post("/session/diagnose/next", requireSession, async (req, res) => {
   try {
     const session = req.fxSession;
+    ensureReasoning(session);
 
     const actionId = typeof req.body?.actionId === "string" ? req.body.actionId.trim() : "";
     if (!actionId) {
@@ -2001,8 +4364,7 @@ app.post("/session/diagnose/next", requireSession, async (req, res) => {
     if (key && value !== undefined) {
       const nk = normalizeAnswerKey(key);
       mergedAnswers[nk] = value;
-
-      if (nk) markAsked(session, nk);
+      markAnswerCaptured(session, nk, value);
 
       if (
         session?.diagnosis?.currentQuestion &&
@@ -2022,6 +4384,10 @@ app.post("/session/diagnose/next", requireSession, async (req, res) => {
     if (mergedAnswers && Object.keys(mergedAnswers).length > 0) {
       session.diagnosis.answers = { ...(session.diagnosis.answers || {}), ...mergedAnswers };
 
+      for (const [k, v] of Object.entries(mergedAnswers)) {
+        markAnswerCaptured(session, k, v);
+      }
+
       if (typeof mergedAnswers.applianceType === "string" && mergedAnswers.applianceType) {
         session.appliance = mergedAnswers.applianceType;
         session.partLookup = session.partLookup || {};
@@ -2030,11 +4396,13 @@ app.post("/session/diagnose/next", requireSession, async (req, res) => {
 
       if (typeof mergedAnswers.issueDescription === "string" && mergedAnswers.issueDescription) {
         session.diagnosis.userDescription = mergedAnswers.issueDescription;
+        markAnswerCaptured(session, "issueDescription", mergedAnswers.issueDescription);
       }
 
       if (typeof mergedAnswers.description === "string" && mergedAnswers.description) {
         const prev = session.diagnosis.userDescription ? String(session.diagnosis.userDescription) : "";
         session.diagnosis.userDescription = prev ? `${prev}\n${mergedAnswers.description}` : mergedAnswers.description;
+        markAnswerCaptured(session, "description", mergedAnswers.description);
       }
 
       if (typeof mergedAnswers.symptomDescription === "string" && mergedAnswers.symptomDescription) {
@@ -2042,16 +4410,48 @@ app.post("/session/diagnose/next", requireSession, async (req, res) => {
         session.diagnosis.userDescription = prev
           ? `${prev}\n${mergedAnswers.symptomDescription}`
           : mergedAnswers.symptomDescription;
+        markAnswerCaptured(session, "symptomDescription", mergedAnswers.symptomDescription);
       }
     }
 
+    syncReasoningEvidenceFromAnswers(session);
+
     if (normalizeText(effectiveMessage)) {
-      const prev = session.diagnosis.userDescription ? String(session.diagnosis.userDescription) : "";
-      session.diagnosis.userDescription = prev
-        ? `${prev}\n${normalizeText(effectiveMessage)}`
-        : normalizeText(effectiveMessage);
-      pushDiagTurn(session, "user", effectiveMessage);
+  const prev = session.diagnosis.userDescription ? String(session.diagnosis.userDescription) : "";
+  session.diagnosis.userDescription = prev
+    ? `${prev}\n${normalizeText(effectiveMessage)}`
+    : normalizeText(effectiveMessage);
+
+  pushDiagTurn(session, "user", effectiveMessage);
+
+  const proposalContext = isExplicitDiagnosisProposalContext(session);
+
+  if (
+    proposalContext &&
+    detectHypothesisRejection(effectiveMessage) &&
+    session.diagnosis.proposedHypothesis
+  ) {
+    const rejected = session.diagnosis.proposedHypothesis;
+
+    if (!session.diagnosis.rejectedHypotheses.includes(rejected)) {
+      session.diagnosis.rejectedHypotheses.push(rejected);
     }
+
+    session.diagnosis.proposedHypothesis = null;
+    session.diagnosis.narrowedBranch = "continue_narrowing";
+    session.diagnosis.locked = false;
+    session.diagnosis.stage = "questions";
+    session.mode = "diagnose";
+  }
+}
+
+    session.diagnosis.reasoning.lastAction = {
+      type: "diagnose_next_input_processed",
+      at: new Date().toISOString(),
+      hadMessage: !!normalizeText(effectiveMessage),
+      hadBoundAnswer: !!key,
+      answerKey: key || null
+    };
 
     const safety0 = computeDynamicSafetyFromText({
       appliance: session.appliance,
@@ -2065,11 +4465,13 @@ app.post("/session/diagnose/next", requireSession, async (req, res) => {
     const gate0 = safetyGateInfo(session);
     if (gate0.missingAcks.length > 0) {
       await req.saveFxSession();
+
       const responseObj = buildSafetyGateResponse(session, {
         scope: "diagnosis",
         requiredAcks: gate0.missingAcks,
         prompt: gate0.prompt || "Confirm required safety acknowledgments to continue."
       });
+
       await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
       return res.status(409).json(responseObj);
     }
@@ -2095,6 +4497,7 @@ app.post("/session/diagnose/next", requireSession, async (req, res) => {
         reason: session.safetyProfile.reason,
         prompt: assistantText
       });
+
       await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
       return res.status(409).json(responseObj);
     }
@@ -2108,6 +4511,7 @@ app.post("/session/diagnose/next", requireSession, async (req, res) => {
       session.diagnosis.locked = true;
 
       if (scoredNow?.confidence != null) session.diagnosis.confidence = scoredNow.confidence;
+
       if (scoredNow?.suggestedComponent) {
         session.diagnosis.suggestedComponent = scoredNow.suggestedComponent;
         session.diagnosis.component = scoredNow.suggestedComponent;
@@ -2117,7 +4521,8 @@ app.post("/session/diagnose/next", requireSession, async (req, res) => {
 
       session.partLookup = session.partLookup || {};
       session.partLookup.applianceType = session.partLookup.applianceType || session.appliance || null;
-      session.partLookup.suspectedComponent = session.diagnosis.suggestedComponent || scoredNow.suggestedComponent || null;
+      session.partLookup.suspectedComponent =
+        session.diagnosis.suggestedComponent || scoredNow.suggestedComponent || null;
 
       session.mode = "part_lookup";
 
@@ -2149,12 +4554,20 @@ app.post("/session/diagnose/next", requireSession, async (req, res) => {
 
     const scriptedQ = getScriptedNextQuestion(session);
     if (scriptedQ) {
-      session.diagnosis.currentQuestion = scriptedQ;
+      syncReasoningEvidenceFromAnswers(session);
+
+      setCurrentQuestion(session, {
+        type: scriptedQ.type,
+        key: scriptedQ.key,
+        choices: scriptedQ.choices
+      });
+
       session.diagnosis.status = "running";
       session.diagnosis.stage = "questions";
       session.diagnosis.locked = false;
 
-      markAsked(session, scriptedQ.key);
+      markQuestionAsked(session, scriptedQ.key);
+      pushDiagTurn(session, "assistant", scriptedQ.prompt);
 
       await req.saveFxSession();
 
@@ -2171,7 +4584,11 @@ app.post("/session/diagnose/next", requireSession, async (req, res) => {
         },
         ui: {
           assistantMessage: scriptedQ.prompt,
-          input: { type: scriptedQ.type, key: scriptedQ.key, choices: scriptedQ.choices }
+          input: {
+            type: scriptedQ.type,
+            key: scriptedQ.key,
+            choices: scriptedQ.choices
+          }
         },
         data: {}
       });
@@ -2180,35 +4597,42 @@ app.post("/session/diagnose/next", requireSession, async (req, res) => {
       return res.status(200).json(responseObj);
     }
 
-    await req.saveFxSession();
+    await extractEvidenceFromMessage({
+      session,
+      userText: effectiveMessage,
+      boundAnswer: key ? { key, value } : null
+    });
 
-    const turnRaw = await runDiagnosisTurn({ session, userText: effectiveMessage });
+    syncReasoningEvidenceFromAnswers(session);
 
-    const rawMode = normalizeText(turnRaw?.mode).toLowerCase();
-    let assistant = normalizeText(turnRaw?.assistant);
+    await rankHypotheses({ session });
 
-    const input2 = normalizeTurnInput(turnRaw);
+    const topHypothesis = session.diagnosis.reasoning.hypotheses?.[0] || null;
+const secondHypothesis = session.diagnosis.reasoning.hypotheses?.[1] || null;
+const topConfidence = normalizeConfidence(topHypothesis?.confidence ?? 0);
 
-    if (input2.type !== "none") {
-      session.diagnosis.currentQuestion = {
-        key: input2.key,
-        type: input2.type,
-        choices: Array.isArray(input2.choices) ? input2.choices : []
-      };
-    } else {
-      session.diagnosis.currentQuestion = null;
-    }
+session.diagnosis.proposedHypothesis =
+  topConfidence >= 70 ? (topHypothesis?.component || null) : null;
 
-    session.diagnosis.confidence = normalizeConfidence(turnRaw?.confidence ?? 0);
-    session.diagnosis.likelyCauses = Array.isArray(turnRaw?.likelyCauses) ? turnRaw.likelyCauses : [];
+session.diagnosis.currentBranch = session.diagnosis.reasoning.symptomFamily || null;
+session.diagnosis.narrowedBranch =
+  topHypothesis?.component && secondHypothesis?.component
+    ? `${topHypothesis.component}__vs__${secondHypothesis.component}`
+    : topHypothesis?.component || null;
 
-    session.diagnosis.suggestedComponent = str(turnRaw?.suggestedComponent) || null;
-    session.diagnosis.component = session.diagnosis.suggestedComponent;
+    session.diagnosis.likelyCauses = (session.diagnosis.reasoning.hypotheses || []).slice(0, 5).map((h) => ({
+      cause: h.component || h.cause || "unknown",
+      confidence: normalizeConfidence(h.confidence ?? 0),
+      notes: h.reason || h.notes || ""
+    }));
 
-    session.diagnosis.safetyFlags = Array.isArray(turnRaw?.safetyFlags) ? turnRaw.safetyFlags : [];
-    session.diagnosis.updatedAt = new Date().toISOString();
-
-    if (assistant) pushDiagTurn(session, "assistant", assistant);
+    session.diagnosis.reasoning.lastAction = {
+      type: "hypotheses_ranked",
+      at: new Date().toISOString(),
+      symptomFamily: session.diagnosis.reasoning.symptomFamily || null,
+      topComponent: topHypothesis?.component || null,
+      topConfidence: topHypothesis?.confidence ?? null
+    };
 
     const safety1 = computeDynamicSafetyFromText({
       appliance: session.appliance,
@@ -2222,31 +4646,31 @@ app.post("/session/diagnose/next", requireSession, async (req, res) => {
     const gate1 = safetyGateInfo(session);
     if (gate1.missingAcks.length > 0) {
       await req.saveFxSession();
+
       const responseObj = buildSafetyGateResponse(session, {
-        scope: rawMode === "repair" ? "repair" : "diagnosis",
+        scope: "diagnosis",
         requiredAcks: gate1.missingAcks,
         prompt: gate1.prompt || "Confirm required safety acknowledgments to continue."
       });
+
       await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
       return res.status(409).json(responseObj);
     }
 
-    if (gate1.blockRepair || rawMode === "escalate") {
+    if (gate1.blockRepair) {
       session.diagnosis.recommendedPath = "escalate";
       session.diagnosis.status = "complete";
       session.diagnosis.stage = "escalate";
       session.diagnosis.locked = false;
+      session.mode = "escalate";
 
       const assistantText =
         session.safetyProfile.prompt ||
-        assistant ||
+        session.safetyProfile.reason ||
         "Stop now and escalate to a professional. Shut off power only if it is safe.";
 
-      if (assistantText && (!assistant || assistantText !== assistant)) {
-        pushDiagTurn(session, "assistant", assistantText);
-      }
+      pushDiagTurn(session, "assistant", assistantText);
 
-      session.mode = "escalate";
       await req.saveFxSession();
 
       const responseObj = buildSafetyBlockedResponse(session, {
@@ -2254,171 +4678,96 @@ app.post("/session/diagnose/next", requireSession, async (req, res) => {
         reason: session.safetyProfile.reason,
         prompt: assistantText
       });
+
       await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
       return res.status(409).json(responseObj);
     }
 
-    const proposedKey = input2.type === "none" ? "" : input2.key;
+    const shouldLock = evaluateLockReadiness(session);
 
-    if (proposedKey && alreadyAsked(session, proposedKey)) {
-      const fb = selectHighValueFallbackQuestion(session);
-      assistant = fb.assistant;
-      session.diagnosis.updatedAt = new Date().toISOString();
-      pushDiagTurn(session, "assistant", assistant);
-
-      const responseObj = buildSuccessResponse(session, {
-        type: "diagnose_turn",
-        nextAction: fb.input.type === "choice" ? "answers" : fb.input.type === "none" ? "done" : "message",
-        safety: buildSafetySummary(session),
-        diagnosis: {
-          locked: false,
-          confidence: session.diagnosis.confidence,
-          suggestedComponent: session.diagnosis.suggestedComponent || null,
-          component: session.diagnosis.suggestedComponent || null,
-          summaryForUser: null
-        },
-        ui: {
-          assistantMessage: assistant,
-          input: fb.input
-        },
-        data: {}
-      });
-
-      markAsked(session, fb.input.key);
-      await req.saveFxSession();
-      await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
-      return res.status(200).json(responseObj);
-    }
-
-    markAsked(session, proposedKey);
-
-    if (!isUsefulQuestion(turnRaw)) {
-      const fb = selectHighValueFallbackQuestion(session);
-      assistant = fb.assistant;
-      pushDiagTurn(session, "assistant", assistant);
-      markAsked(session, fb.input.key);
-      await req.saveFxSession();
-
-      const responseObj = buildSuccessResponse(session, {
-        type: "diagnose_turn",
-        nextAction: fb.input.type === "choice" ? "answers" : fb.input.type === "none" ? "done" : "message",
-        safety: buildSafetySummary(session),
-        diagnosis: {
-          locked: false,
-          confidence: session.diagnosis.confidence,
-          suggestedComponent: session.diagnosis.suggestedComponent || null,
-          component: session.diagnosis.suggestedComponent || null,
-          summaryForUser: null
-        },
-        ui: {
-          assistantMessage: assistant,
-          input: fb.input
-        },
-        data: {}
-      });
-
-      await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
-      return res.status(200).json(responseObj);
-    }
-
-    const wantsRepair = rawMode === "repair" || session.diagnosis.confidence >= 70;
-    const confidentEnough = session.diagnosis.confidence >= 70 && !!session.diagnosis.suggestedComponent;
-
-    const dxAnswers = session?.diagnosis?.answers || {};
-    const appliance = String(session.appliance || "").toLowerCase();
-    const issueCategory = String(session.issueCategory || "").toLowerCase();
-
-    function hasAnswer(ansKey) {
-      const v = dxAnswers?.[ansKey];
-      if (typeof v === "string") {
-        const t = v.trim().toLowerCase();
-        return t.length > 0 && t !== "not sure";
-      }
-      if (typeof v === "number") return Number.isFinite(v);
-      if (typeof v === "boolean") return true;
-      return v != null;
-    }
-
-    let evidenceKeys = [];
-    if (appliance === "refrigerator" && issueCategory === "noise") {
-      evidenceKeys = ["doorStopsNoise", "location", "soundType", "whenHappens", "frostBuildup"];
-    } else {
-      evidenceKeys = ["symptomDetails", "whenHappens", "location", "soundType"];
-    }
-
-    const evidenceCount = evidenceKeys.reduce((n, k) => n + (hasAnswer(k) ? 1 : 0), 0);
-    const hasEnoughEvidence = evidenceCount >= 3;
-
-    const lockReady = wantsRepair && confidentEnough && hasEnoughEvidence;
-
-    if (lockReady) {
+    if (shouldLock) {
+      session.diagnosis.locked = true;
       session.diagnosis.recommendedPath = "repair";
       session.diagnosis.status = "complete";
       session.diagnosis.stage = "locked";
-      session.diagnosis.locked = true;
-
-      session.diagnosis.component = session.diagnosis.suggestedComponent;
+      session.diagnosis.component = session.diagnosis.suggestedComponent || session.diagnosis.component || null;
 
       session.partLookup = session.partLookup || {};
       session.partLookup.applianceType = session.partLookup.applianceType || session.appliance || null;
-      session.partLookup.suspectedComponent = session.diagnosis.suggestedComponent;
+      session.partLookup.suspectedComponent =
+        session.partLookup.suspectedComponent || session.diagnosis.suggestedComponent || null;
 
       session.mode = "part_lookup";
 
       await req.saveFxSession();
-
+      session.diagnosis.proposedHypothesis = session.diagnosis.suggestedComponent || session.diagnosis.component || null;
       const responseObj = buildSuccessResponse(session, {
         type: "diagnose_locked",
         nextAction: "part_lookup",
-        safety: buildSafetySummary(session),
-        diagnosis: {
-          locked: true,
-          confidence: session.diagnosis.confidence,
-          suggestedComponent: session.diagnosis.suggestedComponent,
-          component: session.diagnosis.suggestedComponent,
-          summaryForUser: "Most likely component found. Next we will confirm the part number."
-        },
         ui: {
-          assistantMessage: assistant || "I am confident enough to proceed. Next we will confirm the part number.",
+          assistantMessage: "I’m confident in the issue. Let’s confirm the part.",
           input: { type: "none", key: "", choices: [] }
-        },
-        data: { suggestedComponent: session.diagnosis.suggestedComponent }
+        }
       });
 
       await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
       return res.status(200).json(responseObj);
     }
 
-    session.diagnosis.recommendedPath = "diagnose";
+    const next = await chooseNextDiagnosticAction({ session });
+
+    const question = next?.question || {
+      assistant: "Tell me more about what you're seeing.",
+      input: { type: "text", key: "details", choices: [] }
+    };
+
+    const normalizedInput = normalizeTurnInput({ input: question.input });
+
+    setCurrentQuestion(session, normalizedInput);
+
+    if (normalizedInput.type !== "none" && normalizedInput.key) {
+      markQuestionAsked(session, normalizedInput.key);
+    }
+
+    if (question.assistant) {
+      pushDiagTurn(session, "assistant", question.assistant);
+    }
+
     session.diagnosis.status = "running";
     session.diagnosis.stage = "questions";
     session.diagnosis.locked = false;
-
     session.mode = "diagnose";
-    await req.saveFxSession();
 
-    const nextAction = input2.type === "choice" ? "answers" : input2.type === "none" ? "done" : "message";
+    await req.saveFxSession();
 
     const responseObj = buildSuccessResponse(session, {
       type: "diagnose_turn",
-      nextAction,
-      safety: buildSafetySummary(session),
+      nextAction:
+        normalizedInput.type === "choice"
+          ? "answers"
+          : normalizedInput.type === "none"
+            ? "done"
+            : "message",
       diagnosis: {
         locked: false,
         confidence: session.diagnosis.confidence,
         suggestedComponent: session.diagnosis.suggestedComponent || null,
-        component: session.diagnosis.suggestedComponent || null,
-        summaryForUser: null
+        component: session.diagnosis.component || null,
+        summaryForUser: null,
+        symptomFamily: session.diagnosis.reasoning?.symptomFamily || null,
+        topHypotheses: (session.diagnosis.reasoning?.hypotheses || []).slice(0, 3).map((h) => ({
+          component: h.component,
+          confidence: h.confidence,
+          reason: h.reason || "",
+          missingEvidence: Array.isArray(h.missingEvidence) ? h.missingEvidence : [],
+          conflictingEvidence: Array.isArray(h.conflictingEvidence) ? h.conflictingEvidence : []
+        }))
       },
       ui: {
-        assistantMessage: assistant || "Tell me a bit more about what you are seeing or hearing.",
-        input: {
-          type: input2.type || "text",
-          key: input2.key || "details",
-          choices: Array.isArray(input2.choices) ? input2.choices : []
-        }
-      },
-      data: {}
+        assistantMessage: question.assistant || "Tell me more about what you're seeing.",
+        input: normalizedInput,
+        questionMeta: next?.questionMeta || null
+      }
     });
 
     await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
@@ -2681,10 +5030,6 @@ Task: Provide the most likely OEM part and how to verify it.
   }
 });
 
-/* =========================================================
-   Repair flow
-========================================================= */
-
 function resetRepairFlowForStart(session) {
   session.repairFlow = session.repairFlow || {};
   const rf = session.repairFlow;
@@ -2875,6 +5220,7 @@ app.post("/session/repair/start", requireSession, requireResolvedPartForRepair, 
     });
     return res.status(409).json(payload);
   }
+
   if (gate.blockRepair) {
     session.mode = "repair";
     await req.saveFxSession();
@@ -2886,15 +5232,16 @@ app.post("/session/repair/start", requireSession, requireResolvedPartForRepair, 
     return res.status(409).json(payload);
   }
 
-  const pl = session.partLookup || {};
-  const rs = pl.resolution || {};
+let template = await buildDynamicRepairPlan({ session });
 
-  const template = getRepairTemplate({
-    appliance: session.appliance || pl.applianceType,
-    componentKey: pl.suspectedComponent,
-    partName: rs.partName,
-    oemPartNumber: rs.oemPartNumber
+if (Array.isArray(template?.steps) && template.steps.length > 0) {
+  template.steps = normalizeRepairSteps(template.steps);
+} else {
+  template = getRepairTemplate({
+    appliance: session.appliance,
+    componentKey: session.diagnosis.suggestedComponent
   });
+}
 
   resetRepairFlowForStart(session);
 
@@ -2933,6 +5280,7 @@ app.post("/session/repair/start-generic", requireSession, async (req, res) => {
     });
     return res.status(409).json(payload);
   }
+
   if (gate.blockRepair) {
     session.mode = "repair";
     await req.saveFxSession();
@@ -3314,7 +5662,9 @@ app.get("/session/value/user/:userId", (req, res) => {
 app.post("/session/chat", async (req, res) => {
   try {
     const { sessionId, message } = req.body || {};
-    if (!sessionId || typeof sessionId !== "string") return res.status(400).json({ error: "sessionId is required" });
+    if (!sessionId || typeof sessionId !== "string") {
+      return res.status(400).json({ error: "sessionId is required" });
+    }
 
     const text = normalizeText(message);
     if (!text) return res.status(400).json({ error: "message is required" });
