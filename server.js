@@ -449,152 +449,1843 @@ const DIAGNOSTIC_ONTOLOGY = {
         }
       ]
     },
+
     not_cooling: {
       subsystemCandidates: ["airflow", "sealed_system", "defrost"],
       components: [
         {
           component: "evaporator fan motor",
           subsystem: "airflow",
-          evidenceKeys: ["freezer_temp", "fridge_temp", "airflow_present", "frost_buildup"]
+          evidenceKeys: ["freezer_temp", "fridge_temp", "airflow_present", "frost_buildup"],
+          evidencePatterns: {
+            freezer_temp: ["cold", "very cold"],
+            fridge_temp: ["warm", "not cold"],
+            airflow_present: ["no", "weak"],
+            frost_buildup: ["yes", "not sure"]
+          }
         },
         {
           component: "condenser fan motor",
           subsystem: "airflow",
-          evidenceKeys: ["compressor_running", "airflow_present", "rear_heat_level"]
+          evidenceKeys: ["compressor_running", "airflow_present", "rear_heat_level"],
+          evidencePatterns: {
+            compressor_running: ["yes"],
+            airflow_present: ["no", "weak"],
+            rear_heat_level: ["hot", "very warm"]
+          }
         },
         {
           component: "defrost system issue",
           subsystem: "defrost",
-          evidenceKeys: ["frost_buildup", "cooling_pattern", "freezer_temp"]
+          evidenceKeys: ["frost_buildup", "cooling_pattern", "freezer_temp"],
+          evidencePatterns: {
+            frost_buildup: ["yes"],
+            cooling_pattern: ["gets warm over time", "starts cold then warms"],
+            freezer_temp: ["warming", "not cold enough"]
+          }
         },
         {
           component: "compressor start device",
           subsystem: "sealed_system",
-          evidenceKeys: ["clicking", "compressor_running", "rear_heat_level"]
+          evidenceKeys: ["clicking", "compressor_running", "rear_heat_level"],
+          evidencePatterns: {
+            clicking: ["yes"],
+            compressor_running: ["no", "intermittent"],
+            rear_heat_level: ["warm", "hot"]
+          }
         }
       ]
     },
+
     water_leak: {
       subsystemCandidates: ["drain", "water_supply"],
       components: [
         {
           component: "defrost drain blockage",
           subsystem: "drain",
-          evidenceKeys: ["leak_location", "freezer_temp", "frost_buildup"]
+          evidenceKeys: ["leak_location", "freezer_temp", "frost_buildup"],
+          evidencePatterns: {
+            leak_location: ["under crisper", "inside fridge floor", "inside freezer floor"],
+            freezer_temp: ["cold"],
+            frost_buildup: ["yes", "not sure"]
+          }
         },
         {
           component: "water inlet valve",
           subsystem: "water_supply",
-          evidenceKeys: ["leak_location", "when_happens", "ice_maker_involved"]
+          evidenceKeys: ["leak_location", "when_happens", "ice_maker_involved"],
+          evidencePatterns: {
+            leak_location: ["back bottom", "behind fridge"],
+            when_happens: ["during fill", "intermittent"],
+            ice_maker_involved: ["yes"]
+          }
         }
       ]
     },
+
+    ice_maker_issue: {
+      subsystemCandidates: ["ice_system", "water_supply", "controls"],
+      components: [
+        {
+          component: "ice maker assembly",
+          subsystem: "ice_system",
+          evidenceKeys: ["main_symptom", "when_happens", "sound_type"],
+          evidencePatterns: {
+            main_symptom: ["ice maker not working", "no ice", "ice maker jammed"],
+            when_happens: ["always"],
+            sound_type: ["clicking", "grinding", "none"]
+          }
+        },
+        {
+          component: "water inlet valve",
+          subsystem: "water_supply",
+          evidenceKeys: ["main_symptom", "when_happens", "ice_maker_involved"],
+          evidencePatterns: {
+            main_symptom: ["no ice", "small ice", "slow ice production"],
+            when_happens: ["during fill"],
+            ice_maker_involved: ["yes"]
+          }
+        },
+        {
+          component: "ice maker fill tube freeze",
+          subsystem: "ice_system",
+          evidenceKeys: ["main_symptom", "frost_buildup"],
+          evidencePatterns: {
+            main_symptom: ["no ice", "ice maker not filling"],
+            frost_buildup: ["yes", "not sure"]
+          }
+        }
+      ]
+    },
+
     default: {
       subsystemCandidates: ["general"],
       components: [
-        { component: "fan motor", subsystem: "general", evidenceKeys: ["main_symptom", "timing", "location"] },
-        { component: "control board", subsystem: "general", evidenceKeys: ["main_symptom", "error_codes", "timing"] },
-        { component: "sensor or switch", subsystem: "general", evidenceKeys: ["main_symptom", "timing", "location"] }
+        {
+          component: "fan motor",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "timing", "location"],
+          evidencePatterns: {
+            main_symptom: ["noise", "not cooling"],
+            timing: ["intermittent", "during cooling"],
+            location: ["back bottom", "inside freezer", "inside fridge"]
+          }
+        },
+        {
+          component: "control board",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "error_codes", "timing"],
+          evidencePatterns: {
+            main_symptom: ["not starting", "erratic behavior"],
+            error_codes: ["yes"],
+            timing: ["intermittent", "always"]
+          }
+        },
+        {
+          component: "sensor or switch",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "timing", "location"],
+          evidencePatterns: {
+            main_symptom: ["light issue", "inconsistent behavior"],
+            timing: ["intermittent"],
+            location: ["inside fridge", "inside freezer"]
+          }
+        }
       ]
     }
   },
 
   dryer: {
     no_start: {
-      subsystemCandidates: ["start_circuit", "drive_system", "controls"],
+      subsystemCandidates: ["start_circuit", "drive_system", "controls", "heat_circuit"],
       components: [
         {
           component: "drive motor",
           subsystem: "drive_system",
-          evidenceKeys: ["sound_type", "drum_moves_by_hand", "door_switch_held_effect"]
+          evidenceKeys: ["sound_type", "drum_moves_by_hand", "door_switch_held_effect", "main_symptom", "drum_spin_status"],
+          evidencePatterns: {
+            sound_type: ["hum or buzz", "humming", "buzzing", "hum"],
+            drum_moves_by_hand: ["moves freely"],
+            door_switch_held_effect: ["heater comes on", "drum tries to move"],
+            main_symptom: ["dryer does not start", "nothing happens", "won't start"],
+            drum_spin_status: ["does not spin", "won't spin"]
+          }
         },
         {
           component: "door switch",
           subsystem: "start_circuit",
-          evidenceKeys: ["door_switch_response", "door_switch_held_effect", "sound_type"]
+          evidenceKeys: ["door_switch_response", "door_switch_held_effect", "sound_type", "main_symptom"],
+          evidencePatterns: {
+            door_switch_response: ["no click", "no response"],
+            door_switch_held_effect: ["nothing changes"],
+            sound_type: ["no sound"],
+            main_symptom: ["dryer does not start", "nothing happens", "won't start"]
+          }
         },
         {
           component: "belt switch or idler path",
           subsystem: "drive_system",
-          evidenceKeys: ["drum_moves_by_hand", "drum_spin_status", "sound_type"]
+          evidenceKeys: ["drum_moves_by_hand", "drum_spin_status", "sound_type", "main_symptom"],
+          evidencePatterns: {
+            drum_moves_by_hand: ["feels stuck"],
+            drum_spin_status: ["does not spin", "won't spin"],
+            sound_type: ["hum or buzz", "humming", "buzzing"],
+            main_symptom: ["dryer does not start", "nothing happens", "won't start"]
+          }
         },
         {
           component: "control board",
           subsystem: "controls",
-          evidenceKeys: ["sound_type", "error_codes", "timing"]
+          evidenceKeys: ["sound_type", "error_codes", "timing", "main_symptom"],
+          evidencePatterns: {
+            sound_type: ["no sound"],
+            error_codes: ["yes"],
+            timing: ["always", "intermittent"],
+            main_symptom: ["dryer does not start", "nothing happens", "won't start"]
+          }
+        },
+        {
+          component: "heater relay stuck or control fault",
+          subsystem: "heat_circuit",
+          evidenceKeys: ["door_switch_held_effect", "main_symptom", "sound_type"],
+          evidencePatterns: {
+            door_switch_held_effect: ["heater comes on"],
+            main_symptom: ["dryer does not start", "nothing happens"],
+            sound_type: ["hum or buzz", "no sound"]
+          }
         }
       ]
     },
-    noise: {
-      subsystemCandidates: ["drive_system"],
+
+    no_heat: {
+      subsystemCandidates: ["heat_circuit", "airflow", "controls"],
       components: [
-        { component: "idler pulley", subsystem: "drive_system", evidenceKeys: ["sound_type", "timing"] },
-        { component: "drum support roller", subsystem: "drive_system", evidenceKeys: ["sound_type", "timing"] },
-        { component: "blower wheel", subsystem: "drive_system", evidenceKeys: ["sound_type", "location"] },
-        { component: "drive motor", subsystem: "drive_system", evidenceKeys: ["sound_type", "timing"] }
+        {
+          component: "heating element",
+          subsystem: "heat_circuit",
+          evidenceKeys: ["main_symptom", "timing", "airflow_present"],
+          evidencePatterns: {
+            main_symptom: ["runs but no heat", "not heating", "cold air"],
+            timing: ["always"],
+            airflow_present: ["yes", "strong"]
+          }
+        },
+        {
+          component: "thermal fuse or thermal cut off",
+          subsystem: "heat_circuit",
+          evidenceKeys: ["main_symptom", "timing", "sound_type"],
+          evidencePatterns: {
+            main_symptom: ["runs but no heat", "not heating"],
+            timing: ["sudden failure"],
+            sound_type: ["normal"]
+          }
+        },
+        {
+          component: "cycling thermostat",
+          subsystem: "heat_circuit",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["weak heat", "intermittent heat"],
+            timing: ["intermittent"]
+          }
+        },
+        {
+          component: "restricted vent or airflow issue",
+          subsystem: "airflow",
+          evidenceKeys: ["main_symptom", "airflow_present", "timing"],
+          evidencePatterns: {
+            main_symptom: ["takes too long to dry", "overheats", "weak heat"],
+            airflow_present: ["weak", "low"],
+            timing: ["always"]
+          }
+        }
       ]
     },
+
+    noise: {
+      subsystemCandidates: ["drive_system", "airflow"],
+      components: [
+        {
+          component: "idler pulley",
+          subsystem: "drive_system",
+          evidenceKeys: ["sound_type", "timing", "main_symptom"],
+          evidencePatterns: {
+            sound_type: ["squeal", "squeaking"],
+            timing: ["during start", "while running"],
+            main_symptom: ["noise"]
+          }
+        },
+        {
+          component: "drum support roller",
+          subsystem: "drive_system",
+          evidenceKeys: ["sound_type", "timing", "main_symptom"],
+          evidencePatterns: {
+            sound_type: ["thump", "rumble", "thumping"],
+            timing: ["while running"],
+            main_symptom: ["noise"]
+          }
+        },
+        {
+          component: "blower wheel",
+          subsystem: "airflow",
+          evidenceKeys: ["sound_type", "location", "timing"],
+          evidencePatterns: {
+            sound_type: ["rattle", "scraping", "buzzing"],
+            location: ["front", "blower area"],
+            timing: ["while running"]
+          }
+        },
+        {
+          component: "drive motor",
+          subsystem: "drive_system",
+          evidenceKeys: ["sound_type", "timing"],
+          evidencePatterns: {
+            sound_type: ["hum or buzz", "grinding"],
+            timing: ["during start", "while running"]
+          }
+        }
+      ]
+    },
+
+    not_spinning: {
+      subsystemCandidates: ["drive_system"],
+      components: [
+        {
+          component: "belt switch or idler path",
+          subsystem: "drive_system",
+          evidenceKeys: ["drum_spin_status", "drum_moves_by_hand", "sound_type"],
+          evidencePatterns: {
+            drum_spin_status: ["does not spin", "won't spin"],
+            drum_moves_by_hand: ["moves freely"],
+            sound_type: ["motor runs", "hum or buzz"]
+          }
+        },
+        {
+          component: "drive motor",
+          subsystem: "drive_system",
+          evidenceKeys: ["drum_spin_status", "sound_type", "door_switch_held_effect"],
+          evidencePatterns: {
+            drum_spin_status: ["does not spin", "won't spin"],
+            sound_type: ["hum or buzz", "humming"],
+            door_switch_held_effect: ["heater comes on", "drum tries to move"]
+          }
+        }
+      ]
+    },
+
     default: {
       subsystemCandidates: ["general"],
       components: [
-        { component: "drive motor", subsystem: "general", evidenceKeys: ["main_symptom", "timing"] },
-        { component: "door switch", subsystem: "general", evidenceKeys: ["main_symptom", "timing"] },
-        { component: "control board", subsystem: "general", evidenceKeys: ["main_symptom", "error_codes"] }
+        {
+          component: "drive motor",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["won't start", "does not start"],
+            timing: ["always", "intermittent"]
+          }
+        },
+        {
+          component: "door switch",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["won't start", "stops when door opens"],
+            timing: ["always"]
+          }
+        },
+        {
+          component: "control board",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "error_codes"],
+          evidencePatterns: {
+            main_symptom: ["erratic behavior", "won't start"],
+            error_codes: ["yes"]
+          }
+        }
       ]
     }
   },
 
   washer: {
+    not_draining: {
+      subsystemCandidates: ["drain_system", "controls"],
+      components: [
+        {
+          component: "drain pump",
+          subsystem: "drain_system",
+          evidenceKeys: ["main_symptom", "sound_type", "timing"],
+          evidencePatterns: {
+            main_symptom: ["not draining", "standing water", "water remains"],
+            sound_type: ["humming", "buzzing", "grinding"],
+            timing: ["drain cycle", "spin cycle"]
+          }
+        },
+        {
+          component: "drain hose blockage",
+          subsystem: "drain_system",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["not draining", "slow drain"],
+            timing: ["drain cycle"]
+          }
+        },
+        {
+          component: "lid switch",
+          subsystem: "controls",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["won't spin", "won't drain"],
+            timing: ["spin cycle"]
+          }
+        }
+      ]
+    },
+
+    not_spinning: {
+      subsystemCandidates: ["drive_system", "controls"],
+      components: [
+        {
+          component: "lid switch",
+          subsystem: "controls",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["won't spin", "stops before spin"],
+            timing: ["spin cycle"]
+          }
+        },
+        {
+          component: "drive belt or coupler",
+          subsystem: "drive_system",
+          evidenceKeys: ["main_symptom", "sound_type"],
+          evidencePatterns: {
+            main_symptom: ["agitates but won't spin", "won't spin"],
+            sound_type: ["motor runs", "humming"]
+          }
+        },
+        {
+          component: "drive motor",
+          subsystem: "drive_system",
+          evidenceKeys: ["main_symptom", "sound_type"],
+          evidencePatterns: {
+            main_symptom: ["won't spin", "won't agitate"],
+            sound_type: ["hum or buzz", "humming"]
+          }
+        }
+      ]
+    },
+
+    water_leak: {
+      subsystemCandidates: ["water_system", "drain_system"],
+      components: [
+        {
+          component: "door boot or tub seal",
+          subsystem: "water_system",
+          evidenceKeys: ["leak_location", "when_happens"],
+          evidencePatterns: {
+            leak_location: ["front", "door area"],
+            when_happens: ["during wash", "during fill"]
+          }
+        },
+        {
+          component: "drain hose",
+          subsystem: "drain_system",
+          evidenceKeys: ["leak_location", "when_happens"],
+          evidencePatterns: {
+            leak_location: ["back", "floor behind washer"],
+            when_happens: ["during drain", "during spin"]
+          }
+        },
+        {
+          component: "water inlet valve",
+          subsystem: "water_system",
+          evidenceKeys: ["leak_location", "when_happens"],
+          evidencePatterns: {
+            leak_location: ["back top", "inlet area"],
+            when_happens: ["during fill"]
+          }
+        }
+      ]
+    },
+
+    noise: {
+      subsystemCandidates: ["drive_system", "drain_system"],
+      components: [
+        {
+          component: "drain pump",
+          subsystem: "drain_system",
+          evidenceKeys: ["sound_type", "timing"],
+          evidencePatterns: {
+            sound_type: ["grinding", "buzzing", "rattle"],
+            timing: ["during drain"]
+          }
+        },
+        {
+          component: "bearing or tub support",
+          subsystem: "drive_system",
+          evidenceKeys: ["sound_type", "timing"],
+          evidencePatterns: {
+            sound_type: ["roaring", "rumbling", "grinding"],
+            timing: ["during spin"]
+          }
+        },
+        {
+          component: "drive belt or pulley",
+          subsystem: "drive_system",
+          evidenceKeys: ["sound_type", "timing"],
+          evidencePatterns: {
+            sound_type: ["squeal", "squeaking"],
+            timing: ["during spin", "during agitation"]
+          }
+        }
+      ]
+    },
+
     default: {
       subsystemCandidates: ["general"],
       components: [
-        { component: "drain pump", subsystem: "general", evidenceKeys: ["main_symptom", "timing", "sound_type"] },
-        { component: "lid switch", subsystem: "general", evidenceKeys: ["main_symptom", "timing"] },
-        { component: "drive motor", subsystem: "general", evidenceKeys: ["main_symptom", "sound_type"] }
+        {
+          component: "drain pump",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "timing", "sound_type"],
+          evidencePatterns: {
+            main_symptom: ["not draining", "noise"],
+            timing: ["drain cycle"],
+            sound_type: ["buzzing", "grinding"]
+          }
+        },
+        {
+          component: "lid switch",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["won't spin"],
+            timing: ["spin cycle"]
+          }
+        },
+        {
+          component: "drive motor",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "sound_type"],
+          evidencePatterns: {
+            main_symptom: ["won't spin", "won't agitate"],
+            sound_type: ["hum or buzz", "humming"]
+          }
+        }
       ]
     }
   },
 
   dishwasher: {
+    not_draining: {
+      subsystemCandidates: ["drain_system", "controls"],
+      components: [
+        {
+          component: "drain pump",
+          subsystem: "drain_system",
+          evidenceKeys: ["main_symptom", "sound_type", "timing"],
+          evidencePatterns: {
+            main_symptom: ["not draining", "standing water"],
+            sound_type: ["humming", "buzzing", "grinding"],
+            timing: ["end of cycle", "drain cycle"]
+          }
+        },
+        {
+          component: "drain hose blockage",
+          subsystem: "drain_system",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["not draining", "slow drain"],
+            timing: ["end of cycle", "drain cycle"]
+          }
+        },
+        {
+          component: "control board",
+          subsystem: "controls",
+          evidenceKeys: ["error_codes", "main_symptom"],
+          evidencePatterns: {
+            error_codes: ["yes"],
+            main_symptom: ["not draining"]
+          }
+        }
+      ]
+    },
+
+    water_leak: {
+      subsystemCandidates: ["water_system", "door_system"],
+      components: [
+        {
+          component: "door gasket",
+          subsystem: "door_system",
+          evidenceKeys: ["leak_location", "when_happens"],
+          evidencePatterns: {
+            leak_location: ["front", "door area"],
+            when_happens: ["during wash"]
+          }
+        },
+        {
+          component: "water inlet valve",
+          subsystem: "water_system",
+          evidenceKeys: ["leak_location", "when_happens"],
+          evidencePatterns: {
+            leak_location: ["left front", "bottom front", "under unit"],
+            when_happens: ["during fill"]
+          }
+        },
+        {
+          component: "circulation pump seal",
+          subsystem: "water_system",
+          evidenceKeys: ["leak_location", "when_happens"],
+          evidencePatterns: {
+            leak_location: ["under unit", "center bottom"],
+            when_happens: ["during wash"]
+          }
+        }
+      ]
+    },
+
+    not_cleaning: {
+      subsystemCandidates: ["wash_system", "water_supply"],
+      components: [
+        {
+          component: "circulation pump",
+          subsystem: "wash_system",
+          evidenceKeys: ["main_symptom", "sound_type", "timing"],
+          evidencePatterns: {
+            main_symptom: ["not cleaning", "spray arms not spinning"],
+            sound_type: ["humming", "weak spray noise"],
+            timing: ["wash cycle"]
+          }
+        },
+        {
+          component: "spray arm blockage",
+          subsystem: "wash_system",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["not cleaning", "top rack dirty", "bottom rack dirty"],
+            timing: ["every cycle"]
+          }
+        },
+        {
+          component: "water inlet valve",
+          subsystem: "water_supply",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["not cleaning", "low fill"],
+            timing: ["start of cycle"]
+          }
+        }
+      ]
+    },
+
+    noise: {
+      subsystemCandidates: ["wash_system", "drain_system"],
+      components: [
+        {
+          component: "circulation pump",
+          subsystem: "wash_system",
+          evidenceKeys: ["sound_type", "timing"],
+          evidencePatterns: {
+            sound_type: ["grinding", "buzzing", "loud hum"],
+            timing: ["wash cycle"]
+          }
+        },
+        {
+          component: "drain pump",
+          subsystem: "drain_system",
+          evidenceKeys: ["sound_type", "timing"],
+          evidencePatterns: {
+            sound_type: ["grinding", "buzzing"],
+            timing: ["drain cycle"]
+          }
+        },
+        {
+          component: "spray arm hitting item",
+          subsystem: "wash_system",
+          evidenceKeys: ["sound_type", "timing"],
+          evidencePatterns: {
+            sound_type: ["clicking", "tapping"],
+            timing: ["wash cycle"]
+          }
+        }
+      ]
+    },
+
     default: {
       subsystemCandidates: ["general"],
       components: [
-        { component: "drain pump", subsystem: "general", evidenceKeys: ["main_symptom", "timing", "sound_type"] },
-        { component: "circulation pump", subsystem: "general", evidenceKeys: ["main_symptom", "sound_type"] },
-        { component: "door latch", subsystem: "general", evidenceKeys: ["main_symptom", "timing"] }
+        {
+          component: "drain pump",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "timing", "sound_type"],
+          evidencePatterns: {
+            main_symptom: ["not draining", "noise"],
+            timing: ["drain cycle"],
+            sound_type: ["buzzing", "grinding"]
+          }
+        },
+        {
+          component: "circulation pump",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "sound_type"],
+          evidencePatterns: {
+            main_symptom: ["not cleaning", "noise"],
+            sound_type: ["buzzing", "grinding"]
+          }
+        },
+        {
+          component: "door latch",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["won't start", "door error"],
+            timing: ["start of cycle"]
+          }
+        }
       ]
     }
   },
 
   oven: {
+    no_heat: {
+      subsystemCandidates: ["heat_circuit", "ignition", "controls"],
+      components: [
+        {
+          component: "bake igniter",
+          subsystem: "ignition",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["gas oven won't heat", "glows but no flame", "no heat"],
+            timing: ["bake cycle"]
+          }
+        },
+        {
+          component: "heating element",
+          subsystem: "heat_circuit",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["electric oven won't heat", "no heat", "weak heat"],
+            timing: ["bake cycle"]
+          }
+        },
+        {
+          component: "temperature sensor",
+          subsystem: "controls",
+          evidenceKeys: ["main_symptom", "error_codes"],
+          evidencePatterns: {
+            main_symptom: ["wrong temperature", "overheats", "underheats"],
+            error_codes: ["yes", "not sure"]
+          }
+        },
+        {
+          component: "control board",
+          subsystem: "controls",
+          evidenceKeys: ["main_symptom", "error_codes"],
+          evidencePatterns: {
+            main_symptom: ["no heat", "erratic heating"],
+            error_codes: ["yes"]
+          }
+        }
+      ]
+    },
+
     default: {
       subsystemCandidates: ["general"],
       components: [
-        { component: "bake igniter", subsystem: "general", evidenceKeys: ["main_symptom", "timing"] },
-        { component: "heating element", subsystem: "general", evidenceKeys: ["main_symptom", "timing"] },
-        { component: "control board", subsystem: "general", evidenceKeys: ["main_symptom", "error_codes"] }
+        {
+          component: "bake igniter",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["no heat"],
+            timing: ["bake cycle"]
+          }
+        },
+        {
+          component: "heating element",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["no heat"],
+            timing: ["bake cycle"]
+          }
+        },
+        {
+          component: "control board",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "error_codes"],
+          evidencePatterns: {
+            main_symptom: ["erratic heating"],
+            error_codes: ["yes"]
+          }
+        }
       ]
     }
   },
 
   microwave: {
+    no_heat: {
+      subsystemCandidates: ["door_system", "controls", "high_voltage"],
+      components: [
+        {
+          component: "door switch",
+          subsystem: "door_system",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["runs but no heat", "won't start", "stops when door moves"],
+            timing: ["start", "intermittent"]
+          }
+        },
+        {
+          component: "control board",
+          subsystem: "controls",
+          evidenceKeys: ["main_symptom", "error_codes"],
+          evidencePatterns: {
+            main_symptom: ["won't start", "runs but no heat"],
+            error_codes: ["yes"]
+          }
+        },
+        {
+          component: "high voltage system fault",
+          subsystem: "high_voltage",
+          evidenceKeys: ["main_symptom", "sound_type"],
+          evidencePatterns: {
+            main_symptom: ["runs but no heat"],
+            sound_type: ["loud hum", "buzzing", "burning smell"]
+          }
+        }
+      ]
+    },
+
     default: {
       subsystemCandidates: ["general"],
       components: [
-        { component: "door switch", subsystem: "general", evidenceKeys: ["main_symptom", "timing"] },
-        { component: "turntable motor", subsystem: "general", evidenceKeys: ["main_symptom", "location"] },
-        { component: "control board", subsystem: "general", evidenceKeys: ["main_symptom", "error_codes"] }
+        {
+          component: "door switch",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["won't start", "door issue"],
+            timing: ["intermittent", "start"]
+          }
+        },
+        {
+          component: "turntable motor",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "location"],
+          evidencePatterns: {
+            main_symptom: ["turntable not spinning", "noise"],
+            location: ["bottom", "inside cavity"]
+          }
+        },
+        {
+          component: "control board",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "error_codes"],
+          evidencePatterns: {
+            main_symptom: ["won't start", "erratic behavior"],
+            error_codes: ["yes"]
+          }
+        }
       ]
     }
   },
 
   hvac: {
+    no_start: {
+      subsystemCandidates: ["start_circuit", "fan_system", "controls"],
+      components: [
+        {
+          component: "capacitor",
+          subsystem: "start_circuit",
+          evidenceKeys: ["main_symptom", "humming", "fan_spins_by_hand"],
+          evidencePatterns: {
+            main_symptom: ["won't start", "outside unit hums"],
+            humming: ["yes"],
+            fan_spins_by_hand: ["yes", "starts when pushed"]
+          }
+        },
+        {
+          component: "contactor",
+          subsystem: "controls",
+          evidenceKeys: ["main_symptom", "clicking", "timing"],
+          evidencePatterns: {
+            main_symptom: ["won't start"],
+            clicking: ["yes"],
+            timing: ["call for cooling"]
+          }
+        },
+        {
+          component: "blower motor",
+          subsystem: "fan_system",
+          evidenceKeys: ["main_symptom", "airflow_present", "sound_type"],
+          evidencePatterns: {
+            main_symptom: ["indoor unit won't blow", "no airflow"],
+            airflow_present: ["no"],
+            sound_type: ["hum or buzz", "no sound"]
+          }
+        }
+      ]
+    },
+
+    no_cooling: {
+      subsystemCandidates: ["start_circuit", "fan_system", "controls"],
+      components: [
+        {
+          component: "capacitor",
+          subsystem: "start_circuit",
+          evidenceKeys: ["main_symptom", "humming", "fan_spins_by_hand"],
+          evidencePatterns: {
+            main_symptom: ["not cooling", "outside unit not running"],
+            humming: ["yes"],
+            fan_spins_by_hand: ["yes", "starts when pushed"]
+          }
+        },
+        {
+          component: "contactor",
+          subsystem: "controls",
+          evidenceKeys: ["main_symptom", "clicking", "timing"],
+          evidencePatterns: {
+            main_symptom: ["not cooling"],
+            clicking: ["yes"],
+            timing: ["call for cooling"]
+          }
+        },
+        {
+          component: "blower motor",
+          subsystem: "fan_system",
+          evidenceKeys: ["main_symptom", "airflow_present"],
+          evidencePatterns: {
+            main_symptom: ["not cooling", "weak airflow"],
+            airflow_present: ["no", "weak"]
+          }
+        }
+      ]
+    },
+
+    no_heat: {
+      subsystemCandidates: ["controls", "ignition", "fan_system"],
+      components: [
+        {
+          component: "thermostat or control signal issue",
+          subsystem: "controls",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["no heat", "furnace won't start"],
+            timing: ["call for heat"]
+          }
+        },
+        {
+          component: "igniter or flame sensing fault",
+          subsystem: "ignition",
+          evidenceKeys: ["main_symptom", "sound_type", "timing"],
+          evidencePatterns: {
+            main_symptom: ["no heat", "furnace starts then stops"],
+            sound_type: ["clicking", "igniter glow"],
+            timing: ["call for heat"]
+          }
+        },
+        {
+          component: "blower motor",
+          subsystem: "fan_system",
+          evidenceKeys: ["main_symptom", "airflow_present"],
+          evidencePatterns: {
+            main_symptom: ["no heat", "weak heat"],
+            airflow_present: ["no", "weak"]
+          }
+        }
+      ]
+    },
+
+    water_leak: {
+      subsystemCandidates: ["drain_system", "coil_system"],
+      components: [
+        {
+          component: "condensate drain blockage",
+          subsystem: "drain_system",
+          evidenceKeys: ["main_symptom", "leak_location", "when_happens"],
+          evidencePatterns: {
+            main_symptom: ["hvac water leak", "water near air handler"],
+            leak_location: ["air handler", "indoor unit", "drain pan"],
+            when_happens: ["during cooling"]
+          }
+        },
+        {
+          component: "frozen evaporator coil",
+          subsystem: "coil_system",
+          evidenceKeys: ["main_symptom", "airflow_present", "when_happens"],
+          evidencePatterns: {
+            main_symptom: ["hvac water leak", "not cooling"],
+            airflow_present: ["weak"],
+            when_happens: ["during cooling"]
+          }
+        }
+      ]
+    },
+
     default: {
       subsystemCandidates: ["general"],
       components: [
-        { component: "blower motor", subsystem: "general", evidenceKeys: ["main_symptom", "sound_type", "airflow_present"] },
-        { component: "contactor", subsystem: "general", evidenceKeys: ["main_symptom", "clicking", "timing"] },
-        { component: "capacitor", subsystem: "general", evidenceKeys: ["main_symptom", "humming", "fan_spins_by_hand"] }
+        {
+          component: "blower motor",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "sound_type", "airflow_present"],
+          evidencePatterns: {
+            main_symptom: ["no airflow", "weak airflow"],
+            sound_type: ["hum or buzz"],
+            airflow_present: ["no", "weak"]
+          }
+        },
+        {
+          component: "contactor",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "clicking", "timing"],
+          evidencePatterns: {
+            main_symptom: ["won't start", "not cooling"],
+            clicking: ["yes"],
+            timing: ["call for cooling"]
+          }
+        },
+        {
+          component: "capacitor",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "humming", "fan_spins_by_hand"],
+          evidencePatterns: {
+            main_symptom: ["won't start", "not cooling"],
+            humming: ["yes"],
+            fan_spins_by_hand: ["yes"]
+          }
+        }
+      ]
+    }
+  },
+
+  plumbing: {
+    faucet_leak: {
+      subsystemCandidates: ["spout_path", "handle_path", "drain_path", "supply_path"],
+      components: [
+        {
+          component: "cartridge",
+          subsystem: "handle_path",
+          evidenceKeys: ["leak_location", "when_happens", "main_symptom"],
+          evidencePatterns: {
+            leak_location: ["spout", "handle base"],
+            when_happens: ["when off", "always", "intermittent drip"],
+            main_symptom: ["faucet leaks", "dripping faucet", "water drips from spout"]
+          }
+        },
+        {
+          component: "valve seat or washer",
+          subsystem: "spout_path",
+          evidenceKeys: ["leak_location", "when_happens", "sound_type"],
+          evidencePatterns: {
+            leak_location: ["spout"],
+            when_happens: ["when off", "always", "intermittent drip"],
+            sound_type: ["drip", "dripping"]
+          }
+        },
+        {
+          component: "o ring or handle seal",
+          subsystem: "handle_path",
+          evidenceKeys: ["leak_location", "when_happens", "main_symptom"],
+          evidencePatterns: {
+            leak_location: ["handle", "handle base"],
+            when_happens: ["when on", "when moving handle"],
+            main_symptom: ["water around handle", "leak near handle"]
+          }
+        },
+        {
+          component: "supply line connection",
+          subsystem: "supply_path",
+          evidenceKeys: ["leak_location", "when_happens", "main_symptom"],
+          evidencePatterns: {
+            leak_location: ["under sink", "supply line", "cabinet bottom"],
+            when_happens: ["when on", "during use"],
+            main_symptom: ["leak under sink", "water in cabinet"]
+          }
+        },
+        {
+          component: "drain flange or p trap connection",
+          subsystem: "drain_path",
+          evidenceKeys: ["leak_location", "when_happens", "main_symptom"],
+          evidencePatterns: {
+            leak_location: ["drain", "p trap", "under sink"],
+            when_happens: ["during drain", "after running water"],
+            main_symptom: ["leak under sink", "drain leaks"]
+          }
+        }
+      ]
+    },
+
+    faucet_no_water: {
+      subsystemCandidates: ["aerator_path", "cartridge_path", "supply_path"],
+      components: [
+        {
+          component: "clogged aerator",
+          subsystem: "aerator_path",
+          evidenceKeys: ["main_symptom", "airflow_present", "timing"],
+          evidencePatterns: {
+            main_symptom: ["low water flow", "weak stream", "faucet barely runs"],
+            airflow_present: ["weak"],
+            timing: ["always"]
+          }
+        },
+        {
+          component: "blocked cartridge",
+          subsystem: "cartridge_path",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["low water flow", "handle turns but little water"],
+            timing: ["always", "worse over time"]
+          }
+        },
+        {
+          component: "partially closed supply valve",
+          subsystem: "supply_path",
+          evidenceKeys: ["main_symptom", "leak_location"],
+          evidencePatterns: {
+            main_symptom: ["low water flow", "no water"],
+            leak_location: ["under sink", "supply line"]
+          }
+        }
+      ]
+    },
+
+    clogged_drain: {
+      subsystemCandidates: ["drain_path", "trap_path", "vent_path"],
+      components: [
+        {
+          component: "drain blockage",
+          subsystem: "drain_path",
+          evidenceKeys: ["main_symptom", "timing", "leak_location"],
+          evidencePatterns: {
+            main_symptom: ["drain clogged", "slow drain", "sink backs up"],
+            timing: ["during drain", "always"],
+            leak_location: ["sink", "tub", "shower"]
+          }
+        },
+        {
+          component: "p trap blockage",
+          subsystem: "trap_path",
+          evidenceKeys: ["main_symptom", "leak_location"],
+          evidencePatterns: {
+            main_symptom: ["slow drain", "sink backs up"],
+            leak_location: ["under sink", "sink"]
+          }
+        },
+        {
+          component: "venting issue",
+          subsystem: "vent_path",
+          evidenceKeys: ["main_symptom", "sound_type"],
+          evidencePatterns: {
+            main_symptom: ["slow drain"],
+            sound_type: ["gurgling", "glugging"]
+          }
+        }
+      ]
+    },
+
+    running_toilet: {
+      subsystemCandidates: ["tank_path", "fill_path", "flush_path"],
+      components: [
+        {
+          component: "flapper",
+          subsystem: "flush_path",
+          evidenceKeys: ["main_symptom", "timing", "sound_type"],
+          evidencePatterns: {
+            main_symptom: ["toilet keeps running", "toilet runs constantly"],
+            timing: ["always", "after flush"],
+            sound_type: ["running water"]
+          }
+        },
+        {
+          component: "fill valve",
+          subsystem: "fill_path",
+          evidenceKeys: ["main_symptom", "timing", "sound_type"],
+          evidencePatterns: {
+            main_symptom: ["toilet keeps running", "tank overfills"],
+            timing: ["always", "after refill"],
+            sound_type: ["hissing", "running water"]
+          }
+        },
+        {
+          component: "chain adjustment issue",
+          subsystem: "flush_path",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["toilet runs after flush"],
+            timing: ["after flush"]
+          }
+        }
+      ]
+    },
+
+    toilet_leak: {
+      subsystemCandidates: ["tank_path", "base_path", "supply_path"],
+      components: [
+        {
+          component: "wax ring or base seal",
+          subsystem: "base_path",
+          evidenceKeys: ["main_symptom", "leak_location", "when_happens"],
+          evidencePatterns: {
+            main_symptom: ["toilet leaks", "water around toilet base"],
+            leak_location: ["base", "floor around toilet"],
+            when_happens: ["after flush"]
+          }
+        },
+        {
+          component: "tank to bowl gasket",
+          subsystem: "tank_path",
+          evidenceKeys: ["main_symptom", "leak_location", "when_happens"],
+          evidencePatterns: {
+            main_symptom: ["toilet leaks"],
+            leak_location: ["between tank and bowl", "back of toilet"],
+            when_happens: ["after flush", "always"]
+          }
+        },
+        {
+          component: "supply line connection",
+          subsystem: "supply_path",
+          evidenceKeys: ["main_symptom", "leak_location"],
+          evidencePatterns: {
+            main_symptom: ["toilet leaks"],
+            leak_location: ["supply line", "shutoff valve"]
+          }
+        }
+      ]
+    },
+
+    water_heater_no_hot_water: {
+      subsystemCandidates: ["heat_path", "gas_path", "controls"],
+      components: [
+        {
+          component: "heating element",
+          subsystem: "heat_path",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["no hot water", "not enough hot water"],
+            timing: ["always"]
+          }
+        },
+        {
+          component: "thermostat",
+          subsystem: "controls",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["no hot water", "water not hot enough"],
+            timing: ["always", "intermittent"]
+          }
+        },
+        {
+          component: "pilot or burner issue",
+          subsystem: "gas_path",
+          evidenceKeys: ["main_symptom", "sound_type"],
+          evidencePatterns: {
+            main_symptom: ["no hot water"],
+            sound_type: ["no flame", "clicking", "pilot out"]
+          }
+        }
+      ]
+    },
+
+    water_heater_leak: {
+      subsystemCandidates: ["tank_path", "connection_path", "relief_path"],
+      components: [
+        {
+          component: "water connection leak",
+          subsystem: "connection_path",
+          evidenceKeys: ["main_symptom", "leak_location"],
+          evidencePatterns: {
+            main_symptom: ["water heater leaks"],
+            leak_location: ["top connection", "pipe connection"]
+          }
+        },
+        {
+          component: "temperature and pressure relief valve",
+          subsystem: "relief_path",
+          evidenceKeys: ["main_symptom", "leak_location", "when_happens"],
+          evidencePatterns: {
+            main_symptom: ["water heater leaks"],
+            leak_location: ["relief valve", "side valve"],
+            when_happens: ["during heating", "intermittent"]
+          }
+        },
+        {
+          component: "tank failure",
+          subsystem: "tank_path",
+          evidenceKeys: ["main_symptom", "leak_location"],
+          evidencePatterns: {
+            main_symptom: ["water heater leaks"],
+            leak_location: ["bottom", "tank base"]
+          }
+        }
+      ]
+    },
+
+    default: {
+      subsystemCandidates: ["general"],
+      components: [
+        {
+          component: "cartridge",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "leak_location", "when_happens"],
+          evidencePatterns: {
+            main_symptom: ["faucet leaks", "dripping faucet"],
+            leak_location: ["spout", "handle base"],
+            when_happens: ["when off", "always"]
+          }
+        },
+        {
+          component: "supply connection",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "leak_location"],
+          evidencePatterns: {
+            main_symptom: ["leak under sink"],
+            leak_location: ["under sink", "supply line"]
+          }
+        },
+        {
+          component: "drain blockage",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["slow drain", "drain clogged"],
+            timing: ["during drain", "always"]
+          }
+        }
+      ]
+    }
+  },
+
+  electrical: {
+    light_not_working: {
+      subsystemCandidates: ["lamp_path", "switch_path", "fixture_path", "circuit_path"],
+      components: [
+        {
+          component: "burned out bulb",
+          subsystem: "lamp_path",
+          evidenceKeys: ["main_symptom", "timing", "error_codes"],
+          evidencePatterns: {
+            main_symptom: ["light not working", "light out", "won't turn on"],
+            timing: ["sudden failure"],
+            error_codes: ["no", "not sure"]
+          }
+        },
+        {
+          component: "wall switch",
+          subsystem: "switch_path",
+          evidenceKeys: ["main_symptom", "timing", "sound_type"],
+          evidencePatterns: {
+            main_symptom: ["light not working", "switch does nothing"],
+            timing: ["always"],
+            sound_type: ["no click", "loose switch"]
+          }
+        },
+        {
+          component: "fixture socket or internal connection",
+          subsystem: "fixture_path",
+          evidenceKeys: ["main_symptom", "timing", "location"],
+          evidencePatterns: {
+            main_symptom: ["light not working", "intermittent light"],
+            timing: ["intermittent", "after bulb change"],
+            location: ["fixture", "ceiling", "lamp socket"]
+          }
+        },
+        {
+          component: "tripped breaker or open circuit",
+          subsystem: "circuit_path",
+          evidenceKeys: ["main_symptom", "timing", "location"],
+          evidencePatterns: {
+            main_symptom: ["multiple lights out", "no power to room"],
+            timing: ["sudden failure"],
+            location: ["room", "circuit", "breaker"]
+          }
+        }
+      ]
+    },
+
+    light_flickering: {
+      subsystemCandidates: ["lamp_path", "switch_path", "fixture_path", "circuit_path"],
+      components: [
+        {
+          component: "loose bulb",
+          subsystem: "lamp_path",
+          evidenceKeys: ["main_symptom", "timing", "location"],
+          evidencePatterns: {
+            main_symptom: ["flickering light", "light flickers"],
+            timing: ["intermittent", "when touched"],
+            location: ["bulb", "fixture"]
+          }
+        },
+        {
+          component: "dimmer incompatibility or failing dimmer",
+          subsystem: "switch_path",
+          evidenceKeys: ["main_symptom", "timing", "location"],
+          evidencePatterns: {
+            main_symptom: ["flickering light"],
+            timing: ["when dimmed", "intermittent"],
+            location: ["switch", "dimmer"]
+          }
+        },
+        {
+          component: "loose switch or connection",
+          subsystem: "switch_path",
+          evidenceKeys: ["main_symptom", "timing", "sound_type"],
+          evidencePatterns: {
+            main_symptom: ["flickering light"],
+            timing: ["when switch touched", "intermittent"],
+            sound_type: ["buzzing", "crackle"]
+          }
+        },
+        {
+          component: "fixture connection issue",
+          subsystem: "fixture_path",
+          evidenceKeys: ["main_symptom", "timing", "location"],
+          evidencePatterns: {
+            main_symptom: ["flickering light"],
+            timing: ["always", "intermittent"],
+            location: ["fixture", "ceiling"]
+          }
+        }
+      ]
+    },
+
+    outlet_not_working: {
+      subsystemCandidates: ["receptacle_path", "gfci_path", "circuit_path"],
+      components: [
+        {
+          component: "tripped gfci",
+          subsystem: "gfci_path",
+          evidenceKeys: ["main_symptom", "location", "timing"],
+          evidencePatterns: {
+            main_symptom: ["outlet not working", "no power"],
+            location: ["bathroom", "kitchen", "garage", "outdoor"],
+            timing: ["sudden failure"]
+          }
+        },
+        {
+          component: "worn outlet",
+          subsystem: "receptacle_path",
+          evidenceKeys: ["main_symptom", "timing", "sound_type"],
+          evidencePatterns: {
+            main_symptom: ["outlet not working", "plug falls out"],
+            timing: ["always", "intermittent"],
+            sound_type: ["buzzing", "warm outlet"]
+          }
+        },
+        {
+          component: "tripped breaker or circuit issue",
+          subsystem: "circuit_path",
+          evidenceKeys: ["main_symptom", "location", "timing"],
+          evidencePatterns: {
+            main_symptom: ["multiple outlets dead", "no power"],
+            location: ["room", "circuit"],
+            timing: ["sudden failure"]
+          }
+        }
+      ]
+    },
+
+    breaker_trips: {
+      subsystemCandidates: ["circuit_path", "load_path"],
+      components: [
+        {
+          component: "overloaded circuit",
+          subsystem: "load_path",
+          evidenceKeys: ["main_symptom", "timing", "location"],
+          evidencePatterns: {
+            main_symptom: ["breaker trips", "power trips"],
+            timing: ["when appliance starts", "during heavy use"],
+            location: ["room", "circuit"]
+          }
+        },
+        {
+          component: "short or fault on circuit",
+          subsystem: "circuit_path",
+          evidenceKeys: ["main_symptom", "timing", "sound_type"],
+          evidencePatterns: {
+            main_symptom: ["breaker trips immediately", "breaker won't reset"],
+            timing: ["immediate", "always"],
+            sound_type: ["spark", "burning smell", "buzzing"]
+          }
+        }
+      ]
+    },
+
+    default: {
+      subsystemCandidates: ["general"],
+      components: [
+        {
+          component: "burned out bulb",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["light not working"],
+            timing: ["sudden failure"]
+          }
+        },
+        {
+          component: "wall switch",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "location"],
+          evidencePatterns: {
+            main_symptom: ["switch does nothing", "light not working"],
+            location: ["switch"]
+          }
+        },
+        {
+          component: "fixture connection issue",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["flickering light", "intermittent light"],
+            timing: ["intermittent"]
+          }
+        }
+      ]
+    }
+  },
+
+  fans: {
+    ceiling_fan_not_spinning: {
+      subsystemCandidates: ["motor_path", "capacitor_path", "switch_path", "mount_path"],
+      components: [
+        {
+          component: "run capacitor",
+          subsystem: "capacitor_path",
+          evidenceKeys: ["main_symptom", "sound_type", "fan_spins_by_hand"],
+          evidencePatterns: {
+            main_symptom: ["fan not spinning", "ceiling fan won't spin"],
+            sound_type: ["hum or buzz", "humming"],
+            fan_spins_by_hand: ["yes", "starts when pushed"]
+          }
+        },
+        {
+          component: "fan motor",
+          subsystem: "motor_path",
+          evidenceKeys: ["main_symptom", "sound_type", "timing"],
+          evidencePatterns: {
+            main_symptom: ["fan not spinning", "ceiling fan won't spin"],
+            sound_type: ["hum or buzz", "burning smell"],
+            timing: ["always"]
+          }
+        },
+        {
+          component: "wall switch or pull chain switch",
+          subsystem: "switch_path",
+          evidenceKeys: ["main_symptom", "timing", "location"],
+          evidencePatterns: {
+            main_symptom: ["fan does nothing", "fan not spinning"],
+            timing: ["always"],
+            location: ["switch", "pull chain"]
+          }
+        },
+        {
+          component: "receiver or remote module",
+          subsystem: "switch_path",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["fan does nothing", "remote does not work"],
+            timing: ["always", "intermittent"]
+          }
+        }
+      ]
+    },
+
+    ceiling_fan_noise: {
+      subsystemCandidates: ["mount_path", "blade_path", "motor_path"],
+      components: [
+        {
+          component: "loose blade screws or blade imbalance",
+          subsystem: "blade_path",
+          evidenceKeys: ["main_symptom", "sound_type", "timing"],
+          evidencePatterns: {
+            main_symptom: ["fan noise", "wobble", "shaking"],
+            sound_type: ["clicking", "tapping", "wobble"],
+            timing: ["while running"]
+          }
+        },
+        {
+          component: "loose mounting bracket or canopy",
+          subsystem: "mount_path",
+          evidenceKeys: ["main_symptom", "sound_type", "timing"],
+          evidencePatterns: {
+            main_symptom: ["fan noise", "wobble", "shaking"],
+            sound_type: ["rattle", "clunk"],
+            timing: ["while running"]
+          }
+        },
+        {
+          component: "fan motor bearings",
+          subsystem: "motor_path",
+          evidenceKeys: ["main_symptom", "sound_type", "timing"],
+          evidencePatterns: {
+            main_symptom: ["fan noise"],
+            sound_type: ["grinding", "humming", "buzzing"],
+            timing: ["while running", "always"]
+          }
+        }
+      ]
+    },
+
+    exhaust_fan_issue: {
+      subsystemCandidates: ["motor_path", "switch_path", "airflow_path"],
+      components: [
+        {
+          component: "fan motor",
+          subsystem: "motor_path",
+          evidenceKeys: ["main_symptom", "sound_type", "timing"],
+          evidencePatterns: {
+            main_symptom: ["bathroom fan not working", "fan hums but won't spin", "fan weak"],
+            sound_type: ["hum or buzz", "grinding"],
+            timing: ["always"]
+          }
+        },
+        {
+          component: "fan blade obstruction or dust buildup",
+          subsystem: "airflow_path",
+          evidenceKeys: ["main_symptom", "sound_type", "airflow_present"],
+          evidencePatterns: {
+            main_symptom: ["fan weak", "fan noisy"],
+            sound_type: ["rattle", "scraping"],
+            airflow_present: ["weak", "low"]
+          }
+        },
+        {
+          component: "wall switch",
+          subsystem: "switch_path",
+          evidenceKeys: ["main_symptom", "timing", "location"],
+          evidencePatterns: {
+            main_symptom: ["fan does nothing", "won't turn on"],
+            timing: ["always"],
+            location: ["switch"]
+          }
+        }
+      ]
+    },
+
+    default: {
+      subsystemCandidates: ["general"],
+      components: [
+        {
+          component: "run capacitor",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "fan_spins_by_hand", "sound_type"],
+          evidencePatterns: {
+            main_symptom: ["fan not spinning"],
+            fan_spins_by_hand: ["yes"],
+            sound_type: ["hum or buzz"]
+          }
+        },
+        {
+          component: "fan motor",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "sound_type"],
+          evidencePatterns: {
+            main_symptom: ["fan not spinning", "fan noisy"],
+            sound_type: ["grinding", "buzzing", "hum or buzz"]
+          }
+        },
+        {
+          component: "mounting or blade issue",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "sound_type"],
+          evidencePatterns: {
+            main_symptom: ["fan wobble", "fan noise"],
+            sound_type: ["rattle", "clicking", "tapping"]
+          }
+        }
+      ]
+    }
+  },
+
+  garage_door: {
+    no_start: {
+      subsystemCandidates: ["opener_path", "safety_path", "door_path"],
+      components: [
+        {
+          component: "remote or wall button issue",
+          subsystem: "opener_path",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["garage door won't open", "garage door won't close"],
+            timing: ["always", "intermittent"]
+          }
+        },
+        {
+          component: "safety sensor alignment issue",
+          subsystem: "safety_path",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["garage door won't close", "garage door reverses"],
+            timing: ["during closing"]
+          }
+        },
+        {
+          component: "door track or roller binding",
+          subsystem: "door_path",
+          evidenceKeys: ["main_symptom", "sound_type", "timing"],
+          evidencePatterns: {
+            main_symptom: ["garage door stuck", "garage door won't move smoothly"],
+            sound_type: ["grinding", "rattle", "binding"],
+            timing: ["during opening", "during closing"]
+          }
+        }
+      ]
+    },
+
+    noise: {
+      subsystemCandidates: ["door_path", "opener_path"],
+      components: [
+        {
+          component: "track or roller issue",
+          subsystem: "door_path",
+          evidenceKeys: ["main_symptom", "sound_type", "timing"],
+          evidencePatterns: {
+            main_symptom: ["garage door noise"],
+            sound_type: ["grinding", "squeal", "rattle"],
+            timing: ["during opening", "during closing"]
+          }
+        },
+        {
+          component: "opener drive issue",
+          subsystem: "opener_path",
+          evidenceKeys: ["main_symptom", "sound_type"],
+          evidencePatterns: {
+            main_symptom: ["garage door noise"],
+            sound_type: ["buzzing", "clicking", "humming"]
+          }
+        }
+      ]
+    },
+
+    default: {
+      subsystemCandidates: ["general"],
+      components: [
+        {
+          component: "safety sensor alignment issue",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["garage door won't close", "garage door reverses"],
+            timing: ["during closing"]
+          }
+        },
+        {
+          component: "remote or wall button issue",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom"],
+          evidencePatterns: {
+            main_symptom: ["garage door won't open", "garage door won't close"]
+          }
+        },
+        {
+          component: "track or roller issue",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "sound_type"],
+          evidencePatterns: {
+            main_symptom: ["garage door stuck", "garage door noise"],
+            sound_type: ["grinding", "rattle", "squeal"]
+          }
+        }
+      ]
+    }
+  },
+
+  doors_windows: {
+    door_not_latching: {
+      subsystemCandidates: ["latch_path", "alignment_path", "hinge_path"],
+      components: [
+        {
+          component: "strike plate alignment",
+          subsystem: "alignment_path",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["door won't latch", "door won't close"],
+            timing: ["always"]
+          }
+        },
+        {
+          component: "hinge sag",
+          subsystem: "hinge_path",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["door sagging", "door rubs frame", "door won't latch"],
+            timing: ["always"]
+          }
+        },
+        {
+          component: "latch mechanism",
+          subsystem: "latch_path",
+          evidenceKeys: ["main_symptom", "sound_type"],
+          evidencePatterns: {
+            main_symptom: ["door won't latch", "handle issue"],
+            sound_type: ["loose handle", "no click"]
+          }
+        }
+      ]
+    },
+
+    window_not_opening: {
+      subsystemCandidates: ["track_path", "lock_path", "sash_path"],
+      components: [
+        {
+          component: "track binding",
+          subsystem: "track_path",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["window won't open", "window hard to move"],
+            timing: ["always"]
+          }
+        },
+        {
+          component: "lock or latch issue",
+          subsystem: "lock_path",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["window won't open", "window won't lock"],
+            timing: ["always"]
+          }
+        },
+        {
+          component: "paint or swelling bind",
+          subsystem: "sash_path",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["window stuck", "window hard to open"],
+            timing: ["seasonal", "always"]
+          }
+        }
+      ]
+    },
+
+    default: {
+      subsystemCandidates: ["general"],
+      components: [
+        {
+          component: "alignment issue",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom"],
+          evidencePatterns: {
+            main_symptom: ["door won't latch", "door rubs frame", "window stuck"]
+          }
+        },
+        {
+          component: "latch or lock issue",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom"],
+          evidencePatterns: {
+            main_symptom: ["window won't lock", "door won't latch"]
+          }
+        },
+        {
+          component: "hinge or track issue",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom"],
+          evidencePatterns: {
+            main_symptom: ["door sagging", "window hard to open"]
+          }
+        }
       ]
     }
   },
@@ -603,9 +2294,34 @@ const DIAGNOSTIC_ONTOLOGY = {
     default: {
       subsystemCandidates: ["general"],
       components: [
-        { component: "motor", subsystem: "general", evidenceKeys: ["main_symptom", "timing", "sound_type"] },
-        { component: "switch or sensor", subsystem: "general", evidenceKeys: ["main_symptom", "timing"] },
-        { component: "control board", subsystem: "general", evidenceKeys: ["main_symptom", "error_codes"] }
+        {
+          component: "motor",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "timing", "sound_type"],
+          evidencePatterns: {
+            main_symptom: ["won't start", "noise"],
+            timing: ["always", "intermittent"],
+            sound_type: ["hum or buzz", "buzzing", "grinding"]
+          }
+        },
+        {
+          component: "switch or sensor",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "timing"],
+          evidencePatterns: {
+            main_symptom: ["won't start", "intermittent issue"],
+            timing: ["intermittent", "always"]
+          }
+        },
+        {
+          component: "control board",
+          subsystem: "general",
+          evidenceKeys: ["main_symptom", "error_codes"],
+          evidencePatterns: {
+            main_symptom: ["won't start", "erratic behavior"],
+            error_codes: ["yes"]
+          }
+        }
       ]
     }
   }
