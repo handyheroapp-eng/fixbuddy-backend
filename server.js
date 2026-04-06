@@ -2388,18 +2388,56 @@ function normalizeEvidenceValue(value) {
     "only during cooling": "during cooling",
     "while cooling": "during cooling",
     "all the time": "always",
-    "constant": "constant",
     "constantly": "constant",
     "stops when door opens": "yes",
     "goes away when i open the door": "yes",
     "does not stop when i open the door": "no",
+
     "hum": "humming",
     "buzz": "buzzing",
     "grind": "grinding",
     "squeak": "squeal",
+
     "dont know": "not sure",
     "don't know": "not sure",
-    "idk": "not sure"
+    "idk": "not sure",
+
+    "moves easy": "moves freely",
+    "moves freely by hand": "moves freely",
+    "turns freely": "moves freely",
+    "spins freely": "moves freely",
+    "hard to turn": "feels stuck",
+    "stiff": "feels stuck",
+    "stuck": "feels stuck",
+
+    "heater turns on": "heater comes on",
+    "heating element turns on": "heater comes on",
+    "heating element glows": "heater comes on",
+    "glows": "heater comes on",
+    "drum tries": "drum tries to move",
+
+    "no sound at all": "no sound",
+    "nothing happens": "does not start",
+    "wont start": "does not start",
+    "won't start": "does not start",
+    "doesnt start": "does not start",
+    "doesn't start": "does not start",
+
+    "doesnt spin": "does not spin",
+    "doesn't spin": "does not spin",
+    "wont spin": "does not spin",
+    "won't spin": "does not spin",
+
+    "hum or buzz": "hum or buzz",
+    "low hum": "hum or buzz",
+    "low buzz": "hum or buzz",
+    "hums": "hum or buzz",
+    "buzzes": "hum or buzz",
+    "humming": "hum or buzz",
+    "buzzing": "hum or buzz",
+
+    "it starts when pushed": "starts when pushed",
+    "starts if i push it": "starts when pushed"
   };
 
   return map[v] || v;
@@ -2418,7 +2456,119 @@ function makeEvidenceFact({ key, value, source = "unknown", confidence = 70, raw
     raw: raw ?? value
   };
 }
+function extractDeterministicEvidenceFacts(userText = "") {
+  const text = normalizeText(userText).toLowerCase();
+  if (!text) return [];
 
+  const facts = [];
+
+  const add = (key, value, confidence = 92) => {
+    facts.push(
+      makeEvidenceFact({
+        key,
+        value,
+        source: "deterministic_extract",
+        confidence,
+        raw: value
+      })
+    );
+  };
+
+  if (
+    text.includes("won't start") ||
+    text.includes("wont start") ||
+    text.includes("doesn't start") ||
+    text.includes("doesnt start") ||
+    text.includes("nothing happens") ||
+    text.includes("not starting")
+  ) {
+    add("main_symptom", "does not start", 96);
+  }
+
+  if (
+    text.includes("drum doesn't spin") ||
+    text.includes("drum doesnt spin") ||
+    text.includes("drum won't spin") ||
+    text.includes("drum wont spin") ||
+    text.includes("drum does not spin")
+  ) {
+    add("drum_spin_status", "does not spin", 97);
+  }
+
+  if (
+    text.includes("moves freely") ||
+    text.includes("turns freely") ||
+    text.includes("spins freely")
+  ) {
+    add("drum_moves_by_hand", "moves freely", 96);
+  }
+
+  if (
+    text.includes("feels stuck") ||
+    text.includes("hard to turn") ||
+    text.includes("stiff") ||
+    text.includes("stuck")
+  ) {
+    add("drum_moves_by_hand", "feels stuck", 96);
+  }
+
+  if (
+    text.includes("heater comes on") ||
+    text.includes("heater turns on") ||
+    text.includes("heating element glows") ||
+    text.includes("heating element turns on") ||
+    text.includes("the element glows") ||
+    text.includes("glows orange")
+  ) {
+    add("door_switch_held_effect", "heater comes on", 96);
+  }
+
+  if (
+    text.includes("drum tries to move") ||
+    text.includes("tries to move")
+  ) {
+    add("door_switch_held_effect", "drum tries to move", 94);
+  }
+
+  if (
+    text.includes("nothing changes")
+  ) {
+    add("door_switch_held_effect", "nothing changes", 94);
+  }
+
+  if (
+    text.includes("low hum") ||
+    text.includes("hum or buzz") ||
+    text.includes("hums") ||
+    text.includes("buzzes") ||
+    text.includes("humming") ||
+    text.includes("buzzing")
+  ) {
+    add("sound_type", "hum or buzz", 95);
+  }
+
+  if (text.includes("no sound")) {
+    add("sound_type", "no sound", 95);
+  }
+
+  if (text.includes("click")) {
+    add("sound_type", "click", 90);
+  }
+
+  if (text.includes("error code") || text.includes("blinking light")) {
+    add("error_codes", "yes", 90);
+  }
+
+  if (
+    text.includes("no error code") ||
+    text.includes("no blinking light") ||
+    text === "no"
+  ) {
+    add("error_codes", "no", 88);
+  }
+
+  return facts;
+}
 function upsertEvidenceFact(evidence, fact) {
   if (!fact?.key) return evidence;
 
@@ -2575,7 +2725,10 @@ async function extractEvidenceFromMessage({ session, userText, boundAnswer }) {
       })
     );
   }
-
+  const deterministicFacts = extractDeterministicEvidenceFacts(userText);
+  for (const fact of deterministicFacts) {
+    evidence = upsertEvidenceFact(evidence, fact);
+  }
   if (!normalizeText(userText)) {
     session.diagnosis.reasoning.evidence = evidence;
     return evidence;
@@ -2676,13 +2829,32 @@ async function classifySymptomFamily({ session }) {
   const combined = `${issueCategory} ${symptoms} ${userDescription}`.toLowerCase();
 
   const ruleSignals = {
-    noise: ["noise", "loud", "grinding", "buzzing", "clicking", "rattle", "squeal", "humming", "sound"],
-    no_start: ["won't start", "wont start", "doesn't start", "doesnt start", "not starting", "press start", "no start"],
+    noise: ["noise", "loud", "grinding", "buzzing", "clicking", "rattle", "squeal", "humming", "sound", "thump", "scraping"],
+    no_start: ["won't start", "wont start", "doesn't start", "doesnt start", "not starting", "press start", "no start", "does not start", "nothing happens"],
     not_cooling: ["not cooling", "warm", "not cold", "temperature", "freezer thawing", "fridge warm"],
-    water_leak: ["leak", "leaking", "water on floor", "puddle", "dripping"],
+    water_leak: ["leak", "leaking", "water on floor", "puddle", "dripping", "water around"],
     no_heat: ["no heat", "not heating", "cold air", "won't heat", "wont heat"],
-    not_draining: ["not draining", "standing water", "won't drain", "wont drain"],
-    vibration: ["vibration", "vibrating", "shaking"]
+    not_draining: ["not draining", "standing water", "won't drain", "wont drain", "slow drain", "backs up"],
+    vibration: ["vibration", "vibrating", "shaking", "wobble"],
+    ice_maker_issue: ["ice maker", "no ice", "ice not making", "ice maker jammed"],
+    faucet_leak: ["faucet leaks", "dripping faucet", "water drips from spout", "spout drips"],
+    faucet_no_water: ["low water flow", "weak stream", "no water from faucet", "barely runs"],
+    running_toilet: ["running toilet", "toilet keeps running", "toilet runs constantly"],
+    toilet_leak: ["toilet leaks", "water around toilet base", "toilet leaking"],
+    water_heater_no_hot_water: ["no hot water", "not enough hot water", "water heater not heating"],
+    water_heater_leak: ["water heater leaks", "water around water heater"],
+    light_not_working: ["light not working", "light out", "no light", "won't turn on"],
+    light_flickering: ["flicker", "flickering", "blinking light"],
+    outlet_not_working: ["outlet not working", "dead outlet", "no power at outlet"],
+    breaker_trips: ["breaker trips", "breaker keeps tripping", "trip the breaker"],
+    ceiling_fan_not_spinning: ["fan not spinning", "ceiling fan won't spin", "ceiling fan hums"],
+    ceiling_fan_noise: ["fan wobble", "fan shaking", "ceiling fan noise"],
+    exhaust_fan_issue: ["bathroom fan", "exhaust fan", "range hood"],
+    not_cleaning: ["not cleaning", "dirty dishes", "spray arms not spinning"],
+    not_spinning: ["won't spin", "wont spin", "not spinning", "does not spin"],
+    door_not_latching: ["door won't latch", "door wont latch", "door won't close", "door rubs frame"],
+    window_not_opening: ["window won't open", "window wont open", "window stuck"],
+    no_cooling: ["ac not cooling", "not cooling", "outside unit not running"]
   };
 
   for (const [family, signals] of Object.entries(ruleSignals)) {
@@ -2713,7 +2885,7 @@ async function classifySymptomFamily({ session }) {
       {
         role: "system",
         content: `
-You are classifying appliance symptom families for a constrained diagnosis engine.
+You are classifying appliance and home repair symptom families for a constrained diagnosis engine.
 
 Return only valid JSON:
 {
@@ -2726,10 +2898,29 @@ Allowed families:
 noise
 no_start
 not_cooling
+no_cooling
 water_leak
 not_draining
 no_heat
 vibration
+ice_maker_issue
+faucet_leak
+faucet_no_water
+running_toilet
+toilet_leak
+water_heater_no_hot_water
+water_heater_leak
+light_not_working
+light_flickering
+outlet_not_working
+breaker_trips
+ceiling_fan_not_spinning
+ceiling_fan_noise
+exhaust_fan_issue
+not_cleaning
+not_spinning
+door_not_latching
+window_not_opening
 default
 
 Choose the single best family. Be conservative.
@@ -2803,7 +2994,56 @@ async function rankHypotheses({ session }) {
       notes: supportInfo.supportingEvidence.join(", ")
     };
   });
+  const isDryerNoStart =
+    normalizeApplianceType(session.appliance) === "dryer" &&
+    symptomFamily === "no_start";
 
+  if (isDryerNoStart) {
+    const soundType = normalizeText(String(evidenceProfile.sound_type || "")).toLowerCase();
+    const drumMoves = normalizeText(String(evidenceProfile.drum_moves_by_hand || "")).toLowerCase();
+    const doorEffect = normalizeText(String(evidenceProfile.door_switch_held_effect || "")).toLowerCase();
+    const drumSpin = normalizeText(String(evidenceProfile.drum_spin_status || "")).toLowerCase();
+    const mainSymptom = normalizeText(String(evidenceProfile.main_symptom || "")).toLowerCase();
+
+    for (const item of preScored) {
+      const name = normalizeText(item.component).toLowerCase();
+
+      if (
+        (soundType === "hum or buzz" || soundType === "humming" || soundType === "buzzing") &&
+        drumMoves === "moves freely" &&
+        (doorEffect === "heater comes on" || doorEffect === "drum tries to move") &&
+        (drumSpin === "does not spin" || mainSymptom.includes("does not start"))
+      ) {
+        if (name === "drive motor") {
+          item.confidence = clampNumber(item.confidence + 22, 0, 98);
+          item.supportingEvidence = [...new Set([...(item.supportingEvidence || []), "dryer_pattern:drive_motor"])];
+        }
+
+        if (name === "belt switch or idler path") {
+          item.confidence = clampNumber(item.confidence + 14, 0, 96);
+          item.supportingEvidence = [...new Set([...(item.supportingEvidence || []), "dryer_pattern:belt_or_idler"])];
+        }
+
+        if (name === "heater relay stuck or control fault") {
+          item.confidence = clampNumber(item.confidence + 8, 0, 90);
+          item.supportingEvidence = [...new Set([...(item.supportingEvidence || []), "dryer_pattern:heater_relay_or_control"])];
+        }
+
+        if (name === "door switch") {
+          item.confidence = clampNumber(item.confidence - 18, 0, 100);
+          item.conflictingEvidence = [...new Set([...(item.conflictingEvidence || []), "dryer_pattern:door_switch_less_likely"])];
+        }
+      }
+
+      if (doorEffect === "nothing changes" && name === "door switch") {
+        item.confidence = clampNumber(item.confidence + 15, 0, 95);
+      }
+
+      if (soundType === "no sound" && name === "control board") {
+        item.confidence = clampNumber(item.confidence + 10, 0, 92);
+      }
+    }
+  }
   const response = await client.responses.create({
     model: "gpt-4o-mini",
     input: [
@@ -3116,7 +3356,31 @@ async function chooseNextDiagnosticAction({ session }) {
 
     return true;
   }
+  function hasDryerNoStartCoreEvidence() {
+  const appliance = normalizeApplianceType(session.appliance);
+  const family = normalizeText(session.diagnosis.reasoning?.symptomFamily || "").toLowerCase();
 
+  if (!(appliance === "dryer" && family === "no_start")) return false;
+
+  const soundType = normalizeText(String(evidenceProfile.sound_type || "")).toLowerCase();
+  const drumMoves = normalizeText(String(evidenceProfile.drum_moves_by_hand || "")).toLowerCase();
+  const doorEffect = normalizeText(String(evidenceProfile.door_switch_held_effect || "")).toLowerCase();
+  const drumSpin = normalizeText(String(evidenceProfile.drum_spin_status || "")).toLowerCase();
+
+  const soundOk =
+    soundType.includes("hum") || soundType.includes("buzz");
+
+  const drumMovesOk =
+    drumMoves.includes("free");
+
+  const doorOk =
+    doorEffect.includes("heater") || doorEffect.includes("tries");
+
+  const spinOk =
+    drumSpin.includes("not") || drumSpin.includes("no");
+
+  return soundOk && drumMovesOk && doorOk && spinOk;
+}
   let targetEvidenceKey = null;
 
   if (top && second) {
@@ -3135,8 +3399,10 @@ async function chooseNextDiagnosticAction({ session }) {
     if (nextMissing) targetEvidenceKey = nextMissing.key;
   }
 
-  if (!targetEvidenceKey) {
-    if (!hasMeaningfulAnswerInFamily("symptomDetails")) {
+    if (!targetEvidenceKey) {
+    if (hasDryerNoStartCoreEvidence()) {
+      targetEvidenceKey = "details_locked_guard";
+    } else if (!hasMeaningfulAnswerInFamily("symptomDetails")) {
       targetEvidenceKey = "main_symptom";
     } else {
       targetEvidenceKey = "details";
@@ -3163,22 +3429,29 @@ async function chooseNextDiagnosticAction({ session }) {
         }
       : rawFallback;
 
-  const baseQuestion = questionLibrary[targetEvidenceKey] || {
-    assistant: safeFallback.assistant,
-    input: safeFallback.input
-  };
+    const baseQuestion =
+    targetEvidenceKey === "details_locked_guard"
+      ? {
+          assistant: "I have enough to identify the most likely cause. Next we’ll confirm the part.",
+          input: { type: "none", key: "", choices: [] }
+        }
+      : questionLibrary[targetEvidenceKey] || {
+          assistant: safeFallback.assistant,
+          input: safeFallback.input
+        };
 
   const topName = top?.component || "top candidate";
   const secondName = second?.component || null;
 
   const goal = top && second ? "disambiguate" : "confirm";
-  const reason =
-    targetEvidenceKey === "details"
-      ? "A fresh direct observation is needed because current evidence is still too broad."
-      : secondName
-        ? `This helps separate ${topName} from ${secondName}.`
-        : `This helps verify whether ${topName} is actually the best fit.`;
-
+    const reason =
+    targetEvidenceKey === "details_locked_guard"
+      ? "Core dryer no-start evidence is already present, so the flow should lock instead of asking another generic observation."
+      : targetEvidenceKey === "details"
+        ? "A fresh direct observation is needed because current evidence is still too broad."
+        : secondName
+          ? `This helps separate ${topName} from ${secondName}.`
+          : `This helps verify whether ${topName} is actually the best fit.`;
   const normalizedInput = normalizeTurnInput({ input: baseQuestion.input });
   const assistant =
     normalizeText(baseQuestion.assistant) ||
@@ -3240,7 +3513,24 @@ async function chooseNextDiagnosticAction({ session }) {
     questionMeta
   };
 }
+  function hasDryerNoStartCoreEvidence() {
+    const appliance = normalizeApplianceType(session.appliance);
+    const family = normalizeText(session.diagnosis.reasoning?.symptomFamily || "").toLowerCase();
 
+    if (!(appliance === "dryer" && family === "no_start")) return false;
+
+    const soundType = normalizeText(String(evidenceProfile.sound_type || "")).toLowerCase();
+    const drumMoves = normalizeText(String(evidenceProfile.drum_moves_by_hand || "")).toLowerCase();
+    const doorEffect = normalizeText(String(evidenceProfile.door_switch_held_effect || "")).toLowerCase();
+    const drumSpin = normalizeText(String(evidenceProfile.drum_spin_status || "")).toLowerCase();
+
+    return (
+      (soundType === "hum or buzz" || soundType === "humming" || soundType === "buzzing") &&
+      drumMoves === "moves freely" &&
+      (doorEffect === "heater comes on" || doorEffect === "drum tries to move") &&
+      drumSpin === "does not spin"
+    );
+  }
 function evaluateLockReadiness(session) {
   ensureReasoning(session);
 
@@ -3278,12 +3568,38 @@ function evaluateLockReadiness(session) {
   const conflictingEvidence = Array.isArray(top.conflictingEvidence) ? top.conflictingEvidence : [];
   const missingEvidence = Array.isArray(top.missingEvidence) ? top.missingEvidence : [];
 
+  const notRejected = !session.diagnosis.rejectedHypotheses.includes(top.component);
+
+  const appliance = normalizeApplianceType(session.appliance);
+  const family = normalizeText(session.diagnosis.reasoning?.symptomFamily || "").toLowerCase();
+
+  if (appliance === "dryer" && family === "no_start") {
+    const soundType = normalizeText(String(evidenceProfile.sound_type || "")).toLowerCase();
+    const drumMoves = normalizeText(String(evidenceProfile.drum_moves_by_hand || "")).toLowerCase();
+    const doorEffect = normalizeText(String(evidenceProfile.door_switch_held_effect || "")).toLowerCase();
+    const drumSpin = normalizeText(String(evidenceProfile.drum_spin_status || "")).toLowerCase();
+
+    const hasCoreDryerEvidence =
+      (soundType === "hum or buzz" || soundType === "humming" || soundType === "buzzing") &&
+      drumMoves === "moves freely" &&
+      (doorEffect === "heater comes on" || doorEffect === "drum tries to move") &&
+      drumSpin === "does not spin";
+
+    if (hasCoreDryerEvidence && topConfidence >= 72 && leadGap >= 8 && notRejected) {
+      result.ready = true;
+      result.reason = "dryer_fast_lock";
+      result.missingEvidence = missingEvidence;
+      result.conflictingEvidence = conflictingEvidence;
+      result.supportingEvidence = supportingEvidence;
+      session.diagnosis.reasoning.lockDecision = result;
+      return true;
+    }
+  }
+
   const hasStrongLead = topConfidence >= 78 && leadGap >= 15;
   const hasEnoughEvidence = meaningfulEvidenceCount >= 3;
   const hasDirectSupport = supportingEvidence.length >= 2;
   const hasLowConflict = conflictingEvidence.length <= 1;
-
-  const notRejected = !session.diagnosis.rejectedHypotheses.includes(top.component);
 
   if (!hasStrongLead) {
     result.reason = "confidence_not_strong_enough";
@@ -6431,7 +6747,34 @@ session.diagnosis.narrowedBranch =
     }
 
     const next = await chooseNextDiagnosticAction({ session });
+    if (next?.question?.input?.type === "none") {
+      session.diagnosis.locked = true;
+      session.diagnosis.recommendedPath = "repair";
+      session.diagnosis.status = "complete";
+      session.diagnosis.stage = "locked";
+      session.diagnosis.component = session.diagnosis.suggestedComponent || session.diagnosis.component || null;
 
+      session.partLookup = session.partLookup || {};
+      session.partLookup.applianceType = session.partLookup.applianceType || session.appliance || null;
+      session.partLookup.suspectedComponent =
+        session.partLookup.suspectedComponent || session.diagnosis.suggestedComponent || null;
+
+      session.mode = "part_lookup";
+
+      await req.saveFxSession();
+
+      const responseObj = buildSuccessResponse(session, {
+        type: "diagnose_locked",
+        nextAction: "part_lookup",
+        ui: {
+          assistantMessage: "I’m confident in the issue. Let’s confirm the part.",
+          input: { type: "none", key: "", choices: [] }
+        }
+      });
+
+      await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
+      return res.status(200).json(responseObj);
+    }
     const question = next?.question || {
       assistant: "Tell me more about what you're seeing.",
       input: { type: "text", key: "details", choices: [] }
