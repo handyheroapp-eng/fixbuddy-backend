@@ -6390,25 +6390,124 @@ function syncReasoningEvidenceFromAnswers(session) {
       ? session.diagnosis.answersByIntent
       : {};
 
+  const directAnswers =
+    session?.diagnosis?.answers && typeof session.diagnosis.answers === "object"
+      ? session.diagnosis.answers
+      : {};
+
   let evidence = Array.isArray(session.diagnosis.reasoning.evidence)
     ? session.diagnosis.reasoning.evidence
     : [];
 
-  for (const [key, value] of Object.entries(answersByIntent)) {
-    if (value == null) continue;
-    if (typeof value === "string" && !normalizeText(value)) continue;
+  function normalizeEvidenceKey(key) {
+    const k = normalizeText(String(key || ""));
 
-    evidence = upsertEvidenceFact(
-      evidence,
-      makeEvidenceFact({
-        key,
-        value,
-        source: "answers_sync",
-        confidence: 95,
-        raw: value
-      })
-    );
+    const map = {
+      applianceType: "appliance_type",
+      symptomDescription: "main_symptom",
+      symptomDetails: "main_symptom",
+      issueDescription: "main_symptom",
+      description: "details",
+
+      location: "location",
+      soundType: "sound_type",
+      whenHappens: "when_happens",
+      timing: "timing",
+      doorStopsNoise: "door_stops_noise",
+      frostBuildup: "frost_buildup",
+      errorCodes: "error_codes",
+
+      drumMovesByHand: "drum_moves_by_hand",
+      doorSwitchHeldEffect: "door_switch_held_effect",
+      drumSpinStatus: "drum_spin_status",
+      drumSpin: "drum_spin_status",
+      heatPresent: "heat_present",
+      heater: "heat_present"
+    };
+
+    return map[k] || k;
   }
+
+  function normalizeEvidenceValue(key, value) {
+    if (value == null) return value;
+
+    if (typeof value !== "string") return value;
+
+    const raw = normalizeText(value).toLowerCase();
+    const normalizedKey = normalizeEvidenceKey(key);
+
+    if (normalizedKey === "sound_type") {
+      if (["hum", "buzz", "humming", "buzzing", "hum or buzz"].includes(raw)) return "hum or buzz";
+      if (["no sound", "none", "silent"].includes(raw)) return "no sound";
+      if (["click", "clicking"].includes(raw)) return "clicking";
+    }
+
+    if (normalizedKey === "drum_moves_by_hand") {
+      if (["moves freely", "free", "spins freely"].includes(raw)) return "moves freely";
+      if (["feels stuck", "stuck", "hard to turn"].includes(raw)) return "feels stuck";
+    }
+
+    if (normalizedKey === "door_switch_held_effect") {
+      if (raw.includes("heater")) return "heater comes on";
+      if (raw.includes("tries")) return "drum tries to move";
+      if (raw.includes("nothing")) return "nothing changes";
+    }
+
+    if (normalizedKey === "drum_spin_status") {
+      if (
+        raw.includes("does not spin") ||
+        raw.includes("not spinning") ||
+        raw.includes("doesn't spin") ||
+        raw.includes("no spin")
+      ) {
+        return "does not spin";
+      }
+      if (raw.includes("spins")) return "spins";
+    }
+
+    if (normalizedKey === "door_stops_noise") {
+      if (["yes", "no", "not sure"].includes(raw)) return raw;
+    }
+
+    if (normalizedKey === "frost_buildup") {
+      if (["yes", "no", "not sure"].includes(raw)) return raw;
+    }
+
+    if (normalizedKey === "error_codes") {
+      if (["yes", "no", "not sure"].includes(raw)) return raw;
+    }
+
+    if (normalizedKey === "heat_present") {
+      if (["yes", "no", "not sure"].includes(raw)) return raw;
+      if (raw.includes("heater comes on")) return "yes";
+    }
+
+    return value;
+  }
+
+  function upsertFromRecord(record, source) {
+    for (const [rawKey, rawValue] of Object.entries(record || {})) {
+      if (rawValue == null) continue;
+      if (typeof rawValue === "string" && !normalizeText(rawValue)) continue;
+
+      const evidenceKey = normalizeEvidenceKey(rawKey);
+      const evidenceValue = normalizeEvidenceValue(rawKey, rawValue);
+
+      evidence = upsertEvidenceFact(
+        evidence,
+        makeEvidenceFact({
+          key: evidenceKey,
+          value: evidenceValue,
+          source,
+          confidence: 95,
+          raw: rawValue
+        })
+      );
+    }
+  }
+
+  upsertFromRecord(answersByIntent, "answers_sync");
+  upsertFromRecord(directAnswers, "answers_sync");
 
   session.diagnosis.reasoning.evidence = evidence;
 }
