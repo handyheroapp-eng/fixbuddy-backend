@@ -3263,7 +3263,17 @@ async function chooseNextDiagnosticAction({ session }) {
       }
     }
   };
+function hasMeaningfulDetailsAnswer() {
+  return hasMeaningfulAnswerInFamily("details") || hasMeaningfulAnswerInFamily("symptomDetails");
+}
 
+function wasDetailsAlreadyAsked() {
+  return alreadyAskedQuestion(session, "details") || alreadyAskedQuestion(session, "symptomDetails");
+}
+
+function shouldAvoidGenericDetails() {
+  return hasMeaningfulDetailsAnswer() || wasDetailsAlreadyAsked();
+}
   function mapEvidenceKeyToIntentKey(evidenceKey) {
   const map = {
     when_happens: "whenHappens",
@@ -3368,16 +3378,22 @@ async function chooseNextDiagnosticAction({ session }) {
   const drumSpin = normalizeText(String(evidenceProfile.drum_spin_status || "")).toLowerCase();
 
   const soundOk =
-    soundType.includes("hum") || soundType.includes("buzz");
+    soundType.includes("hum") ||
+    soundType.includes("buzz") ||
+    soundType.includes("no sound") ||
+    soundType === "none" ||
+    soundType.includes("none");
 
-  const drumMovesOk =
-    drumMoves.includes("free");
+  const drumMovesOk = drumMoves.includes("free");
 
   const doorOk =
-    doorEffect.includes("heater") || doorEffect.includes("tries");
+    doorEffect.includes("heater") ||
+    doorEffect.includes("tries") ||
+    doorEffect.includes("nothing changes");
 
   const spinOk =
-    drumSpin.includes("not") || drumSpin.includes("no");
+    drumSpin.includes("not") ||
+    drumSpin.includes("no");
 
   return soundOk && drumMovesOk && doorOk && spinOk;
 }
@@ -3399,45 +3415,54 @@ async function chooseNextDiagnosticAction({ session }) {
     if (nextMissing) targetEvidenceKey = nextMissing.key;
   }
 
-    if (!targetEvidenceKey) {
-    if (hasDryerNoStartCoreEvidence()) {
-      targetEvidenceKey = "details_locked_guard";
-    } else if (!hasMeaningfulAnswerInFamily("symptomDetails")) {
-      targetEvidenceKey = "main_symptom";
-    } else {
-      targetEvidenceKey = "details";
-    }
+   if (!targetEvidenceKey) {
+  if (hasDryerNoStartCoreEvidence()) {
+    targetEvidenceKey = "details_locked_guard";
+  } else if (!hasMeaningfulAnswerInFamily("symptomDetails")) {
+    targetEvidenceKey = "main_symptom";
+  } else if (!shouldAvoidGenericDetails()) {
+    targetEvidenceKey = "details";
+  } else {
+    targetEvidenceKey = null;
   }
+}
 
   const rawFallback = selectHighValueFallbackQuestion(session);
+const fallbackInput = normalizeTurnInput({ input: rawFallback?.input });
+const fallbackIntentKey = normalizeText(fallbackInput?.key || "");
 
-  const fallbackInput = normalizeTurnInput({ input: rawFallback.input });
-  const fallbackIntentKey = normalizeText(fallbackInput?.key || "");
+const fallbackWouldDuplicateFamily =
+  fallbackIntentKey && hasMeaningfulAnswerInFamily(fallbackIntentKey);
 
-  const safeFallback =
-    fallbackIntentKey && hasMeaningfulAnswerInFamily(fallbackIntentKey)
-      ? {
-          assistant: "Tell me the next most noticeable thing you observe when the issue happens.",
-          input: { type: "text", key: "details", choices: [] },
-          questionMeta: {
-            goal: "disambiguate",
-            reason: "Fallback question was replaced because that evidence family is already answered.",
-            rulesUsed: ["safe_fallback_family_guard"],
-            eliminates: [],
-            narrowsTo: hypotheses.slice(0, 3).map((h) => h.component).filter(Boolean)
-          }
+const safeFallback =
+  fallbackWouldDuplicateFamily || shouldAvoidGenericDetails()
+    ? {
+        assistant: "",
+        input: { type: "none", key: "", choices: [] },
+        questionMeta: {
+          goal: "hold",
+          reason: "No safe fallback question remains without repeating already captured evidence.",
+          rulesUsed: ["safe_fallback_guard"],
+          eliminates: [],
+          narrowsTo: hypotheses.slice(0, 3).map((h) => h.component).filter(Boolean)
         }
-      : rawFallback;
+      }
+    : rawFallback;
 
     const baseQuestion =
-    targetEvidenceKey === "details_locked_guard"
-      ? {
-          assistant: "I have enough to identify the most likely cause. Next we’ll confirm the part.",
-          input: { type: "none", key: "", choices: [] }
-        }
-      : questionLibrary[targetEvidenceKey] || {
+  targetEvidenceKey === "details_locked_guard"
+    ? {
+        assistant: "I have enough to identify the most likely cause. Next we’ll confirm the part.",
+        input: { type: "none", key: "", choices: [] }
+      }
+    : targetEvidenceKey
+      ? questionLibrary[targetEvidenceKey] || {
           assistant: safeFallback.assistant,
           input: safeFallback.input
+        }
+      : {
+          assistant: "",
+          input: { type: "none", key: "", choices: [] }
         };
 
   const topName = top?.component || "top candidate";
@@ -3474,7 +3499,21 @@ async function chooseNextDiagnosticAction({ session }) {
       }
     };
   }
-
+if (!targetEvidenceKey && (!safeFallback || normalizeText(safeFallback?.input?.type) === "none")) {
+  return {
+    question: {
+      assistant: "I have enough information collected that I should stop asking repeated questions and move to review or lock the diagnosis.",
+      input: { type: "none", key: "", choices: [] }
+    },
+    questionMeta: {
+      goal: "stop_repeat_loop",
+      reason: "No useful unanswered diagnostic question remains.",
+      rulesUsed: ["terminal_no_repeat_guard"],
+      eliminates: [],
+      narrowsTo: hypotheses.slice(0, 3).map((h) => h.component).filter(Boolean)
+    }
+  };
+}
   const questionMeta = {
     goal,
     reason,
@@ -3568,7 +3607,11 @@ function evaluateLockReadiness(session) {
   const conflictingEvidence = Array.isArray(top.conflictingEvidence) ? top.conflictingEvidence : [];
   const missingEvidence = Array.isArray(top.missingEvidence) ? top.missingEvidence : [];
 
-  const notRejected = !session.diagnosis.rejectedHypotheses.includes(top.component);
+  const rejectedHypotheses = Array.isArray(session.diagnosis.rejectedHypotheses)
+    ? session.diagnosis.rejectedHypotheses
+    : [];
+
+  const notRejected = !rejectedHypotheses.includes(top.component);
 
   const appliance = normalizeApplianceType(session.appliance);
   const family = normalizeText(session.diagnosis.reasoning?.symptomFamily || "").toLowerCase();
@@ -3579,13 +3622,39 @@ function evaluateLockReadiness(session) {
     const doorEffect = normalizeText(String(evidenceProfile.door_switch_held_effect || "")).toLowerCase();
     const drumSpin = normalizeText(String(evidenceProfile.drum_spin_status || "")).toLowerCase();
 
-    const hasCoreDryerEvidence =
-      (soundType === "hum or buzz" || soundType === "humming" || soundType === "buzzing") &&
-      drumMoves === "moves freely" &&
-      (doorEffect === "heater comes on" || doorEffect === "drum tries to move") &&
-      drumSpin === "does not spin";
+    const soundSuggestsStartCircuitOrMotor =
+      soundType === "hum or buzz" ||
+      soundType === "humming" ||
+      soundType === "buzzing" ||
+      soundType === "no sound" ||
+      soundType === "none" ||
+      soundType === "silent";
 
-    if (hasCoreDryerEvidence && topConfidence >= 72 && leadGap >= 8 && notRejected) {
+    const drumMovesFreely =
+      drumMoves === "moves freely" ||
+      drumMoves.includes("free");
+
+    const doorEffectSupportsNoStart =
+      doorEffect === "heater comes on" ||
+      doorEffect === "drum tries to move" ||
+      doorEffect === "nothing changes" ||
+      doorEffect.includes("heater") ||
+      doorEffect.includes("tries") ||
+      doorEffect.includes("nothing");
+
+    const drumNotSpinning =
+      drumSpin === "does not spin" ||
+      drumSpin.includes("does not spin") ||
+      drumSpin.includes("not spin") ||
+      drumSpin.includes("no spin");
+
+    const hasCoreDryerEvidence =
+      soundSuggestsStartCircuitOrMotor &&
+      drumMovesFreely &&
+      doorEffectSupportsNoStart &&
+      drumNotSpinning;
+
+    if (hasCoreDryerEvidence && topConfidence >= 68 && leadGap >= 6 && notRejected) {
       result.ready = true;
       result.reason = "dryer_fast_lock";
       result.missingEvidence = missingEvidence;
@@ -3596,9 +3665,9 @@ function evaluateLockReadiness(session) {
     }
   }
 
-  const hasStrongLead = topConfidence >= 78 && leadGap >= 15;
+  const hasStrongLead = topConfidence >= 76 && leadGap >= 12;
   const hasEnoughEvidence = meaningfulEvidenceCount >= 3;
-  const hasDirectSupport = supportingEvidence.length >= 2;
+  const hasDirectSupport = supportingEvidence.length >= 1;
   const hasLowConflict = conflictingEvidence.length <= 1;
 
   if (!hasStrongLead) {
@@ -6584,62 +6653,19 @@ app.post("/session/diagnose/next", requireSession, async (req, res) => {
       return res.status(200).json(responseObj);
     }
 
-    const scriptedQ = getScriptedNextQuestion(session);
-    if (scriptedQ) {
-      syncReasoningEvidenceFromAnswers(session);
-
-      setCurrentQuestion(session, {
-        type: scriptedQ.type,
-        key: scriptedQ.key,
-        choices: scriptedQ.choices
-      });
-
-      session.diagnosis.status = "running";
-      session.diagnosis.stage = "questions";
-      session.diagnosis.locked = false;
-
-      markQuestionAsked(session, scriptedQ.key);
-      pushDiagTurn(session, "assistant", scriptedQ.prompt);
-
-      await req.saveFxSession();
-
-      const responseObj = buildSuccessResponse(session, {
-        type: "diagnose_turn",
-        nextAction: "answers",
-        safety: buildSafetySummary(session),
-        diagnosis: {
-          locked: false,
-          confidence: session.diagnosis.confidence,
-          suggestedComponent: session.diagnosis.suggestedComponent || null,
-          component: session.diagnosis.suggestedComponent || null,
-          summaryForUser: null
-        },
-        ui: {
-          assistantMessage: scriptedQ.prompt,
-          input: {
-            type: scriptedQ.type,
-            key: scriptedQ.key,
-            choices: scriptedQ.choices
-          }
-        },
-        data: {}
-      });
-
-      await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
-      return res.status(200).json(responseObj);
-    }
+    
 
     await extractEvidenceFromMessage({
-      session,
-      userText: effectiveMessage,
-      boundAnswer: key ? { key, value } : null
-    });
+  session,
+  userText: effectiveMessage,
+  boundAnswer: key ? { key, value } : null
+});
 
-    syncReasoningEvidenceFromAnswers(session);
+syncReasoningEvidenceFromAnswers(session);
 
-    await rankHypotheses({ session });
+await rankHypotheses({ session });
 
-    const topHypothesis = session.diagnosis.reasoning.hypotheses?.[0] || null;
+const topHypothesis = session.diagnosis.reasoning.hypotheses?.[0] || null;
 const secondHypothesis = session.diagnosis.reasoning.hypotheses?.[1] || null;
 const topConfidence = normalizeConfidence(topHypothesis?.confidence ?? 0);
 
@@ -6652,134 +6678,155 @@ session.diagnosis.narrowedBranch =
     ? `${topHypothesis.component}__vs__${secondHypothesis.component}`
     : topHypothesis?.component || null;
 
-    session.diagnosis.likelyCauses = (session.diagnosis.reasoning.hypotheses || []).slice(0, 5).map((h) => ({
-      cause: h.component || h.cause || "unknown",
-      confidence: normalizeConfidence(h.confidence ?? 0),
-      notes: h.reason || h.notes || ""
-    }));
+session.diagnosis.likelyCauses = (session.diagnosis.reasoning.hypotheses || []).slice(0, 5).map((h) => ({
+  cause: h.component || h.cause || "unknown",
+  confidence: normalizeConfidence(h.confidence ?? 0),
+  notes: h.reason || h.notes || ""
+}));
 
-    session.diagnosis.reasoning.lastAction = {
-      type: "hypotheses_ranked",
-      at: new Date().toISOString(),
-      symptomFamily: session.diagnosis.reasoning.symptomFamily || null,
-      topComponent: topHypothesis?.component || null,
-      topConfidence: topHypothesis?.confidence ?? null
+session.diagnosis.reasoning.lastAction = {
+  type: "hypotheses_ranked",
+  at: new Date().toISOString(),
+  symptomFamily: session.diagnosis.reasoning.symptomFamily || null,
+  topComponent: topHypothesis?.component || null,
+  topConfidence: topHypothesis?.confidence ?? null
+};
+
+const safety1 = computeDynamicSafetyFromText({
+  appliance: session.appliance,
+  issueCategory: session.issueCategory,
+  symptoms: session.symptoms,
+  userDescription: session.diagnosis.userDescription,
+  safetyFlags: session.diagnosis.safetyFlags
+});
+setSafetyProfile(session, safety1);
+
+const gate1 = safetyGateInfo(session);
+if (gate1.missingAcks.length > 0) {
+  await req.saveFxSession();
+
+  const responseObj = buildSafetyGateResponse(session, {
+    scope: "diagnosis",
+    requiredAcks: gate1.missingAcks,
+    prompt: gate1.prompt || "Confirm required safety acknowledgments to continue."
+  });
+
+  await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
+  return res.status(409).json(responseObj);
+}
+
+if (gate1.blockRepair) {
+  session.diagnosis.recommendedPath = "escalate";
+  session.diagnosis.status = "complete";
+  session.diagnosis.stage = "escalate";
+  session.diagnosis.locked = false;
+  session.mode = "escalate";
+
+  const assistantText =
+    session.safetyProfile.prompt ||
+    session.safetyProfile.reason ||
+    "Stop now and escalate to a professional. Shut off power only if it is safe.";
+
+  pushDiagTurn(session, "assistant", assistantText);
+
+  await req.saveFxSession();
+
+  const responseObj = buildSafetyBlockedResponse(session, {
+    scope: "diagnosis",
+    reason: session.safetyProfile.reason,
+    prompt: assistantText
+  });
+
+  await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
+  return res.status(409).json(responseObj);
+}
+
+const shouldLock = evaluateLockReadiness(session);
+
+if (shouldLock) {
+  session.diagnosis.locked = true;
+  session.diagnosis.recommendedPath = "repair";
+  session.diagnosis.status = "complete";
+  session.diagnosis.stage = "locked";
+  session.diagnosis.component = session.diagnosis.suggestedComponent || session.diagnosis.component || null;
+
+  session.partLookup = session.partLookup || {};
+  session.partLookup.applianceType = session.partLookup.applianceType || session.appliance || null;
+  session.partLookup.suspectedComponent =
+    session.partLookup.suspectedComponent || session.diagnosis.suggestedComponent || null;
+
+  session.mode = "part_lookup";
+
+  await req.saveFxSession();
+  session.diagnosis.proposedHypothesis = session.diagnosis.suggestedComponent || session.diagnosis.component || null;
+
+  const responseObj = buildSuccessResponse(session, {
+    type: "diagnose_locked",
+    nextAction: "part_lookup",
+    ui: {
+      assistantMessage: "I’m confident in the issue. Let’s confirm the part.",
+      input: { type: "none", key: "", choices: [] }
+    }
+  });
+
+  await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
+  return res.status(200).json(responseObj);
+}
+
+const next = await chooseNextDiagnosticAction({ session });
+
+if (next?.question?.input?.type === "none") {
+  session.diagnosis.locked = true;
+  session.diagnosis.recommendedPath = "repair";
+  session.diagnosis.status = "complete";
+  session.diagnosis.stage = "locked";
+  session.diagnosis.component = session.diagnosis.suggestedComponent || session.diagnosis.component || null;
+
+  session.partLookup = session.partLookup || {};
+  session.partLookup.applianceType = session.partLookup.applianceType || session.appliance || null;
+  session.partLookup.suspectedComponent =
+    session.partLookup.suspectedComponent || session.diagnosis.suggestedComponent || null;
+
+  session.mode = "part_lookup";
+
+  await req.saveFxSession();
+
+  const responseObj = buildSuccessResponse(session, {
+    type: "diagnose_locked",
+    nextAction: "part_lookup",
+    ui: {
+      assistantMessage: "I’m confident in the issue. Let’s confirm the part.",
+      input: { type: "none", key: "", choices: [] }
+    }
+  });
+
+  await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
+  return res.status(200).json(responseObj);
+}
+
+let question = next?.question || null;
+
+if (!question || !question.input || question.input.type === "none") {
+  const scriptedQ = getScriptedNextQuestion(session);
+
+  if (scriptedQ) {
+    question = {
+      assistant: scriptedQ.prompt,
+      input: {
+        type: scriptedQ.type,
+        key: scriptedQ.key,
+        choices: scriptedQ.choices
+      }
     };
+  }
+}
 
-    const safety1 = computeDynamicSafetyFromText({
-      appliance: session.appliance,
-      issueCategory: session.issueCategory,
-      symptoms: session.symptoms,
-      userDescription: session.diagnosis.userDescription,
-      safetyFlags: session.diagnosis.safetyFlags
-    });
-    setSafetyProfile(session, safety1);
-
-    const gate1 = safetyGateInfo(session);
-    if (gate1.missingAcks.length > 0) {
-      await req.saveFxSession();
-
-      const responseObj = buildSafetyGateResponse(session, {
-        scope: "diagnosis",
-        requiredAcks: gate1.missingAcks,
-        prompt: gate1.prompt || "Confirm required safety acknowledgments to continue."
-      });
-
-      await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
-      return res.status(409).json(responseObj);
-    }
-
-    if (gate1.blockRepair) {
-      session.diagnosis.recommendedPath = "escalate";
-      session.diagnosis.status = "complete";
-      session.diagnosis.stage = "escalate";
-      session.diagnosis.locked = false;
-      session.mode = "escalate";
-
-      const assistantText =
-        session.safetyProfile.prompt ||
-        session.safetyProfile.reason ||
-        "Stop now and escalate to a professional. Shut off power only if it is safe.";
-
-      pushDiagTurn(session, "assistant", assistantText);
-
-      await req.saveFxSession();
-
-      const responseObj = buildSafetyBlockedResponse(session, {
-        scope: "diagnosis",
-        reason: session.safetyProfile.reason,
-        prompt: assistantText
-      });
-
-      await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
-      return res.status(409).json(responseObj);
-    }
-
-    const shouldLock = evaluateLockReadiness(session);
-
-    if (shouldLock) {
-      session.diagnosis.locked = true;
-      session.diagnosis.recommendedPath = "repair";
-      session.diagnosis.status = "complete";
-      session.diagnosis.stage = "locked";
-      session.diagnosis.component = session.diagnosis.suggestedComponent || session.diagnosis.component || null;
-
-      session.partLookup = session.partLookup || {};
-      session.partLookup.applianceType = session.partLookup.applianceType || session.appliance || null;
-      session.partLookup.suspectedComponent =
-        session.partLookup.suspectedComponent || session.diagnosis.suggestedComponent || null;
-
-      session.mode = "part_lookup";
-
-      await req.saveFxSession();
-      session.diagnosis.proposedHypothesis = session.diagnosis.suggestedComponent || session.diagnosis.component || null;
-      const responseObj = buildSuccessResponse(session, {
-        type: "diagnose_locked",
-        nextAction: "part_lookup",
-        ui: {
-          assistantMessage: "I’m confident in the issue. Let’s confirm the part.",
-          input: { type: "none", key: "", choices: [] }
-        }
-      });
-
-      await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
-      return res.status(200).json(responseObj);
-    }
-
-    const next = await chooseNextDiagnosticAction({ session });
-    if (next?.question?.input?.type === "none") {
-      session.diagnosis.locked = true;
-      session.diagnosis.recommendedPath = "repair";
-      session.diagnosis.status = "complete";
-      session.diagnosis.stage = "locked";
-      session.diagnosis.component = session.diagnosis.suggestedComponent || session.diagnosis.component || null;
-
-      session.partLookup = session.partLookup || {};
-      session.partLookup.applianceType = session.partLookup.applianceType || session.appliance || null;
-      session.partLookup.suspectedComponent =
-        session.partLookup.suspectedComponent || session.diagnosis.suggestedComponent || null;
-
-      session.mode = "part_lookup";
-
-      await req.saveFxSession();
-
-      const responseObj = buildSuccessResponse(session, {
-        type: "diagnose_locked",
-        nextAction: "part_lookup",
-        ui: {
-          assistantMessage: "I’m confident in the issue. Let’s confirm the part.",
-          input: { type: "none", key: "", choices: [] }
-        }
-      });
-
-      await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
-      return res.status(200).json(responseObj);
-    }
-    const question = next?.question || {
-      assistant: "Tell me more about what you're seeing.",
-      input: { type: "text", key: "details", choices: [] }
-    };
-
+if (!question) {
+  question = {
+    assistant: "",
+    input: { type: "none", key: "", choices: [] }
+  };
+}
     const normalizedInput = normalizeTurnInput({ input: question.input });
 
     setCurrentQuestion(session, normalizedInput);
@@ -6836,7 +6883,50 @@ session.diagnosis.narrowedBranch =
     return res.status(500).json({ error: "Internal error", detail: err?.message || "unknown" });
   }
 });
+const scriptedQ = getScriptedNextQuestion(session);
+    if (scriptedQ) {
+      syncReasoningEvidenceFromAnswers(session);
 
+      setCurrentQuestion(session, {
+        type: scriptedQ.type,
+        key: scriptedQ.key,
+        choices: scriptedQ.choices
+      });
+
+      session.diagnosis.status = "running";
+      session.diagnosis.stage = "questions";
+      session.diagnosis.locked = false;
+
+      markQuestionAsked(session, scriptedQ.key);
+      pushDiagTurn(session, "assistant", scriptedQ.prompt);
+
+      await req.saveFxSession();
+
+      const responseObj = buildSuccessResponse(session, {
+        type: "diagnose_turn",
+        nextAction: "answers",
+        safety: buildSafetySummary(session),
+        diagnosis: {
+          locked: false,
+          confidence: session.diagnosis.confidence,
+          suggestedComponent: session.diagnosis.suggestedComponent || null,
+          component: session.diagnosis.suggestedComponent || null,
+          summaryForUser: null
+        },
+        ui: {
+          assistantMessage: scriptedQ.prompt,
+          input: {
+            type: scriptedQ.type,
+            key: scriptedQ.key,
+            choices: scriptedQ.choices
+          }
+        },
+        data: {}
+      });
+
+      await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
+      return res.status(200).json(responseObj);
+    }
 app.post("/session/power", requireSession, async (req, res) => {
   const session = req.fxSession;
   const { powerState } = req.body || {};
