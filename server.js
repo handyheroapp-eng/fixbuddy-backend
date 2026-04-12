@@ -3882,13 +3882,19 @@ function normalizeRepairSteps(steps) {
         powerRequired = index === steps.length - 1 ? "on" : "off";
       }
 
-      const instructions = Array.isArray(step?.instructions)
-        ? step.instructions.map((x) => normalizeText(x)).filter(Boolean).slice(0, 5)
+      let instructions = Array.isArray(step?.instructions)
+        ? step.instructions.map((x) => normalizeText(x)).filter(Boolean)
         : [];
+
+      if (instructions.length < 3) {
+        instructions.push("Make sure you clearly identify the correct part and work area before continuing.");
+      }
+
+      instructions = instructions.slice(0, 6);
 
       const confirmPrompt =
         normalizeText(step?.confirmPrompt) ||
-        `Confirm you completed: ${safeTitle}.`;
+        "Confirm you completed this step and are ready to continue.";
 
       return {
         id: safeId,
@@ -5388,10 +5394,31 @@ Return ONLY valid JSON with this shape:
 }
 
 Rules:
-If safety risk is high or user mentions burning smell, sparks, gas, refrigerant, water near electrical, choose "escalate".
+If safety risk is high or the user mentions burning smell, smoke, sparks, gas, refrigerant leak, shock risk, or water near electrical parts, choose "escalate".
 If confidence is below 70, choose "diagnose".
-If confidence is 70 or higher and a component is clear, choose "repair".
-Keep questions minimal, max 3.
+If confidence is 70 or higher and a specific component is reasonably clear, choose "repair".
+
+Question rules:
+- Keep clarifying questions minimal, maximum 3.
+- Only ask questions that directly reduce uncertainty toward a specific component or next action.
+- Do not ask broad lifestyle, usage, or irrelevant questions.
+- Do not repeat a question that is semantically equivalent to information already provided.
+- If the user already gave a clear main symptom, do not ask for the main symptom again.
+- Prefer specific discriminating questions over generic "tell me more" questions.
+
+Likely causes rules:
+- likelyCauses should be practical and component-focused.
+- suggestedComponent should only be set when reasonably supported by the evidence.
+- If certainty is low, leave suggestedComponent empty and prefer "diagnose".
+
+Safety rules:
+- If any severe hazard is present, recommendedPath must be "escalate".
+- In hazardous cases, clarifyingQuestions should usually be empty.
+
+Output rules:
+- Return valid JSON only.
+- Do not include markdown.
+- Do not include explanation outside the JSON object.
 `.trim();
 
   const userPayload = {
@@ -5445,15 +5472,41 @@ Rules:
 If there is any sign of burning smell, smoke, sparks, gas smell, refrigerant leak, shock risk, or water near electrical, set mode to "escalate" and input.type to "none".
 If confidence is 70 or higher and a component is clear, set mode to "repair".
 Otherwise set mode to "diagnose" and ask ONE question.
-The question must be tied to narrowing to a component in questionMeta.narrowsTo.
-Keep assistant concise.
-If input.type is "choice", provide 2 to 6 choices.
+
+Question rules:
+- Ask only one question at a time.
+- The question must directly help narrow to a specific component or immediate next action.
+- The question must be tied to narrowing to a component in questionMeta.narrowsTo.
+- Keep assistant concise, but specific.
+- If input.type is "choice", provide 2 to 6 choices.
+- Prefer choice questions when they can reduce ambiguity faster than free text.
+- Do not use vague filler prompts like "tell me more" unless there is truly no better discriminating question.
 
 Critical constraints:
-Do not ask a question that is semantically equivalent to a previously asked question.
-If the user has already described the main symptom, do not ask for the main symptom again.
-Do not ask leading questions that suggest a faulty component by name unless confidence is high and competing causes are clearly weaker.
-If the user declined a proposed repair or said they want to troubleshoot further, do not repeat that same repair proposal. Ask the next best discriminating question from a different branch.
+- Do not ask a question that is semantically equivalent to a previously asked question.
+- If the user has already described the main symptom, do not ask for the main symptom again.
+- Do not ask leading questions that suggest a faulty component by name unless confidence is high and competing causes are clearly weaker.
+- If the user declined a proposed repair or said they want to troubleshoot further, do not repeat that same repair proposal. Ask the next best discriminating question from a different branch.
+- Do not repeat a question for an intent that is already answered.
+- Do not ask a generic details question if the user already provided meaningful symptom detail.
+- If no useful unanswered question remains and confidence is high enough, prefer mode "repair".
+- If no useful unanswered question remains and confidence is still too low, ask the single best remaining discriminating question, not a restatement of prior questions.
+
+Safety and escalation:
+- If a serious hazard appears, choose "escalate" and do not ask another question.
+- If safety risk is moderate, questionMeta.goal may be "safety" and the question should be directly tied to safe next steps.
+
+Output quality:
+- likelyCauses should be realistic and component-focused.
+- suggestedComponent should only be set if reasonably supported by the evidence.
+- rulesUsed should briefly describe why the question was chosen.
+- eliminates should name the weaker possibilities the question helps rule out when possible.
+- narrowsTo should list the most likely component candidates this question is trying to separate.
+
+Output rules:
+- Return valid JSON only.
+- Do not include markdown.
+- Do not include explanation outside the JSON object.
 `.trim();
 
   const dx = session.diagnosis || {};
@@ -7222,14 +7275,35 @@ Task: Provide the most likely OEM part and how to verify it.
 
     cacheSet(cacheKey, resolved);
 
-    return res.json({
-      type: "part_resolve_result",
-      sessionId: session.sessionId,
-      cacheHit: false,
-      partLookup: pl,
-      result: resolved,
-      statusSnapshot: buildStatusSnapshot(session)
-    });
+    const partNameText = resolved.partName || "replacement part";
+const partNumberText = resolved.oemPartNumber || "not available";
+
+const assistantMessage = `
+Most likely failed part: ${partNameText}
+OEM part number: ${partNumberText}
+
+What to do next:
+1. Search this OEM part number online (Amazon, RepairClinic, AppliancePartsPros)
+2. Match it to your exact model number before ordering
+3. Order the part if it matches your appliance
+4. Return here and follow the step-by-step repair guide
+
+If the part number does not match your model, use the search queries provided to find the correct one.
+`.trim();
+
+return res.json({
+  type: "part_resolve_result",
+  sessionId: session.sessionId,
+  cacheHit: false,
+  partLookup: pl,
+  result: resolved,
+  assistant: assistantMessage,
+  verification:
+    Array.isArray(resolved.verificationSteps) && resolved.verificationSteps.length > 0
+      ? resolved.verificationSteps
+      : undefined,
+  statusSnapshot: buildStatusSnapshot(session)
+});
   } catch (err) {
     console.error("Error in /session/part-resolve:", err);
     res.status(500).json({ error: "Internal server error", detail: err?.message || "unknown" });
