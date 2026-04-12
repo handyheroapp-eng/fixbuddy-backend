@@ -6969,7 +6969,7 @@ if (!question) {
         }))
       },
       ui: {
-        assistantMessage: question.assistant || "Tell me more about what you're seeing.",
+        assistantMessage: question.assistant || "",
         input: normalizedInput,
         questionMeta: next?.questionMeta || null
       }
@@ -6977,55 +6977,13 @@ if (!question) {
 
     await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
     return res.status(200).json(responseObj);
-  } catch (err) {
+  } 
+  catch (err) {
     console.error("diagnose/next error:", err);
     return res.status(500).json({ error: "Internal error", detail: err?.message || "unknown" });
   }
 });
-const scriptedQ = getScriptedNextQuestion(session);
-    if (scriptedQ) {
-      syncReasoningEvidenceFromAnswers(session);
 
-      setCurrentQuestion(session, {
-        type: scriptedQ.type,
-        key: scriptedQ.key,
-        choices: scriptedQ.choices
-      });
-
-      session.diagnosis.status = "running";
-      session.diagnosis.stage = "questions";
-      session.diagnosis.locked = false;
-
-      markQuestionAsked(session, scriptedQ.key);
-      pushDiagTurn(session, "assistant", scriptedQ.prompt);
-
-      await req.saveFxSession();
-
-      const responseObj = buildSuccessResponse(session, {
-        type: "diagnose_turn",
-        nextAction: "answers",
-        safety: buildSafetySummary(session),
-        diagnosis: {
-          locked: false,
-          confidence: session.diagnosis.confidence,
-          suggestedComponent: session.diagnosis.suggestedComponent || null,
-          component: session.diagnosis.suggestedComponent || null,
-          summaryForUser: null
-        },
-        ui: {
-          assistantMessage: scriptedQ.prompt,
-          input: {
-            type: scriptedQ.type,
-            key: scriptedQ.key,
-            choices: scriptedQ.choices
-          }
-        },
-        data: {}
-      });
-
-      await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
-      return res.status(200).json(responseObj);
-    }
 app.post("/session/power", requireSession, async (req, res) => {
   const session = req.fxSession;
   const { powerState } = req.body || {};
