@@ -2972,6 +2972,7 @@ async function rankHypotheses({ session }) {
   session.diagnosis.reasoning.ontologyCandidates = ontologyCandidates;
 
   const evidenceProfile = summarizeEvidenceProfile(session);
+
   const preScored = ontologyCandidates.map((candidate) => {
     const supportInfo = scoreEvidenceSupportForCandidate(candidate, evidenceProfile);
 
@@ -2994,8 +2995,21 @@ async function rankHypotheses({ session }) {
       notes: supportInfo.supportingEvidence.join(", ")
     };
   });
+
+  const applianceType = normalizeApplianceType(session.appliance);
+  const mainSymptom = normalizeText(String(evidenceProfile.main_symptom || "")).toLowerCase();
+  const userDescription = normalizeText(String(session.diagnosis?.userDescription || "")).toLowerCase();
+
+  const textHasAny = (text, phrases) => phrases.some((phrase) => text.includes(phrase));
+  const addSupportTag = (item, tag) => {
+    item.supportingEvidence = [...new Set([...(item.supportingEvidence || []), tag])];
+  };
+  const addConflictTag = (item, tag) => {
+    item.conflictingEvidence = [...new Set([...(item.conflictingEvidence || []), tag])];
+  };
+
   const isDryerNoStart =
-    normalizeApplianceType(session.appliance) === "dryer" &&
+    applianceType === "dryer" &&
     symptomFamily === "no_start";
 
   if (isDryerNoStart) {
@@ -3003,47 +3017,189 @@ async function rankHypotheses({ session }) {
     const drumMoves = normalizeText(String(evidenceProfile.drum_moves_by_hand || "")).toLowerCase();
     const doorEffect = normalizeText(String(evidenceProfile.door_switch_held_effect || "")).toLowerCase();
     const drumSpin = normalizeText(String(evidenceProfile.drum_spin_status || "")).toLowerCase();
-    const mainSymptom = normalizeText(String(evidenceProfile.main_symptom || "")).toLowerCase();
+
+    const noStartPattern =
+      (soundType === "hum or buzz" || soundType === "humming" || soundType === "buzzing") &&
+      drumMoves === "moves freely" &&
+      (doorEffect === "heater comes on" || doorEffect === "drum tries to move") &&
+      (drumSpin === "does not spin" || mainSymptom.includes("does not start"));
 
     for (const item of preScored) {
       const name = normalizeText(item.component).toLowerCase();
 
-      if (
-        (soundType === "hum or buzz" || soundType === "humming" || soundType === "buzzing") &&
-        drumMoves === "moves freely" &&
-        (doorEffect === "heater comes on" || doorEffect === "drum tries to move") &&
-        (drumSpin === "does not spin" || mainSymptom.includes("does not start"))
-      ) {
+      if (noStartPattern) {
         if (name === "drive motor") {
           item.confidence = clampNumber(item.confidence + 22, 0, 98);
-          item.supportingEvidence = [...new Set([...(item.supportingEvidence || []), "dryer_pattern:drive_motor"])];
+          addSupportTag(item, "dryer_pattern:drive_motor");
         }
 
         if (name === "belt switch or idler path") {
           item.confidence = clampNumber(item.confidence + 14, 0, 96);
-          item.supportingEvidence = [...new Set([...(item.supportingEvidence || []), "dryer_pattern:belt_or_idler"])];
+          addSupportTag(item, "dryer_pattern:belt_or_idler");
         }
 
         if (name === "heater relay stuck or control fault") {
           item.confidence = clampNumber(item.confidence + 8, 0, 90);
-          item.supportingEvidence = [...new Set([...(item.supportingEvidence || []), "dryer_pattern:heater_relay_or_control"])];
+          addSupportTag(item, "dryer_pattern:heater_relay_or_control");
         }
 
         if (name === "door switch") {
           item.confidence = clampNumber(item.confidence - 18, 0, 100);
-          item.conflictingEvidence = [...new Set([...(item.conflictingEvidence || []), "dryer_pattern:door_switch_less_likely"])];
+          addConflictTag(item, "dryer_pattern:door_switch_less_likely");
         }
       }
 
       if (doorEffect === "nothing changes" && name === "door switch") {
         item.confidence = clampNumber(item.confidence + 15, 0, 95);
+        addSupportTag(item, "dryer_pattern:door_switch_no_change");
       }
 
       if (soundType === "no sound" && name === "control board") {
         item.confidence = clampNumber(item.confidence + 10, 0, 92);
+        addSupportTag(item, "dryer_pattern:no_sound_control_board");
       }
     }
   }
+
+  const heatTextMatch =
+    textHasAny(mainSymptom, [
+      "not heating",
+      "no heat",
+      "stops heating",
+      "heat stops",
+      "heats sometimes",
+      "takes too long",
+      "multiple cycles",
+      "poor drying"
+    ]) ||
+    textHasAny(userDescription, [
+      "not heating",
+      "no heat",
+      "stops heating",
+      "heat stops",
+      "heats sometimes",
+      "after cooling",
+      "cooling down",
+      "multiple cycles",
+      "takes too long",
+      "poor drying"
+    ]);
+
+  const isDryerHeatCase =
+    applianceType === "dryer" &&
+    (
+      symptomFamily === "no_heat" ||
+      symptomFamily === "intermittent_heat" ||
+      symptomFamily === "poor_drying" ||
+      heatTextMatch
+    );
+
+  if (isDryerHeatCase) {
+    const airflowStrength = normalizeText(String(
+      evidenceProfile.airflow_strength ||
+      evidenceProfile.vent_airflow ||
+      evidenceProfile.outside_vent_airflow ||
+      ""
+    )).toLowerCase();
+
+    const ventRestriction = normalizeText(String(
+      evidenceProfile.vent_restriction ||
+      evidenceProfile.airflow_restriction ||
+      evidenceProfile.lint_blockage ||
+      ""
+    )).toLowerCase();
+
+    const drumSpin = normalizeText(String(evidenceProfile.drum_spin_status || "")).toLowerCase();
+    const heatReturnsAfterCooldown = normalizeText(String(
+      evidenceProfile.heat_returns_after_cooldown ||
+      evidenceProfile.restarts_after_cooling ||
+      ""
+    )).toLowerCase();
+
+    const intermittentHeatPattern =
+      textHasAny(mainSymptom, ["heats sometimes", "intermittent"]) ||
+      textHasAny(userDescription, ["heats sometimes", "intermittent"]);
+
+    const heatStopsPattern =
+      textHasAny(mainSymptom, ["stops heating", "heat stops"]) ||
+      textHasAny(userDescription, ["stops heating", "heat stops"]);
+
+    const cooldownPattern =
+      heatReturnsAfterCooldown.includes("yes") ||
+      heatReturnsAfterCooldown.includes("returns") ||
+      heatReturnsAfterCooldown.includes("after cooling") ||
+      textHasAny(userDescription, ["after cooling", "cooling down"]);
+
+    const airflowRestrictionPattern =
+      airflowStrength.includes("weak") ||
+      airflowStrength.includes("poor") ||
+      airflowStrength.includes("low") ||
+      ventRestriction.includes("yes") ||
+      ventRestriction.includes("blocked") ||
+      ventRestriction.includes("clogged") ||
+      ventRestriction.includes("restricted");
+
+    const drumStillSpinsLikely =
+      drumSpin === "" ||
+      (drumSpin.includes("spin") && !drumSpin.includes("does not")) ||
+      !drumSpin.includes("does not spin");
+
+    for (const item of preScored) {
+      const name = normalizeText(item.component).toLowerCase();
+
+      if (name.includes("motor")) {
+        item.confidence = clampNumber(item.confidence - 35, 0, 100);
+        addConflictTag(item, "heat_pattern_conflicts_with_motor");
+      }
+
+      if (name.includes("belt") || name.includes("idler")) {
+        item.confidence = clampNumber(item.confidence - 18, 0, 100);
+        addConflictTag(item, "heat_pattern_conflicts_with_belt_path");
+      }
+
+      if (name.includes("door switch")) {
+        item.confidence = clampNumber(item.confidence - 20, 0, 100);
+        addConflictTag(item, "heat_pattern_conflicts_with_door_switch");
+      }
+
+      if (name.includes("airflow") || name.includes("vent") || name.includes("lint")) {
+        if (intermittentHeatPattern || heatStopsPattern || textHasAny(userDescription, ["multiple cycles", "takes too long", "poor drying"])) {
+          item.confidence = clampNumber(item.confidence + 26, 0, 100);
+        }
+
+        if (airflowRestrictionPattern) {
+          item.confidence = clampNumber(item.confidence + 22, 0, 100);
+        }
+
+        addSupportTag(item, "dryer_pattern:airflow_restriction");
+      }
+
+      if (name.includes("thermostat") || name.includes("thermal") || name.includes("cutoff")) {
+        if (heatStopsPattern || cooldownPattern) {
+          item.confidence = clampNumber(item.confidence + 22, 0, 100);
+        }
+
+        if (drumStillSpinsLikely) {
+          item.confidence = clampNumber(item.confidence + 8, 0, 100);
+        }
+
+        addSupportTag(item, "dryer_pattern:thermal_cycling");
+      }
+
+      if (name.includes("heating element")) {
+        if (intermittentHeatPattern || mainSymptom.includes("no heat") || userDescription.includes("no heat")) {
+          item.confidence = clampNumber(item.confidence + 10, 0, 100);
+        }
+
+        addSupportTag(item, "dryer_pattern:heater_path");
+      }
+
+      if (name.includes("control")) {
+        item.confidence = clampNumber(item.confidence - 8, 0, 100);
+      }
+    }
+  }
+
   const response = await client.responses.create({
     model: "gpt-4o-mini",
     input: [
@@ -3071,6 +3227,7 @@ Only rank candidates from the provided allowedCandidates list.
 Do not introduce any new component names.
 Confidence must reflect actual evidence strength, not guesswork.
 Be conservative.
+For dryer heat related cases, prefer airflow restriction and thermal protection causes over motor related causes unless drum movement symptoms clearly support a motor fault.
 `.trim()
       },
       {
@@ -3173,6 +3330,10 @@ async function chooseNextDiagnosticAction({ session }) {
   const top = hypotheses[0] || null;
   const second = hypotheses[1] || null;
 
+  const appliance = normalizeApplianceType(session.appliance);
+  const symptomFamily = normalizeText(session.diagnosis.reasoning?.symptomFamily || "").toLowerCase();
+  const userDescription = normalizeText(session.diagnosis?.userDescription || "").toLowerCase();
+
   const questionLibrary = {
     location: {
       assistant: "Where is the issue most noticeable?",
@@ -3246,6 +3407,40 @@ async function chooseNextDiagnosticAction({ session }) {
         choices: ["nothing changes", "drum tries to move", "heater comes on", "not sure"]
       }
     },
+
+    airflow_strength: {
+      assistant: "When the dryer is running, how strong is the airflow coming out of the outside vent?",
+      input: {
+        type: "choice",
+        key: "airflowStrength",
+        choices: ["strong airflow", "weak airflow", "not sure"]
+      }
+    },
+    vent_restriction: {
+      assistant: "Does the vent or lint path seem clogged, restricted, or packed with lint?",
+      input: {
+        type: "choice",
+        key: "ventRestriction",
+        choices: ["yes", "no", "not sure"]
+      }
+    },
+    drum_spins_when_heat_stops: {
+      assistant: "When the heat stops, does the drum keep spinning normally?",
+      input: {
+        type: "choice",
+        key: "drumSpinsWhenHeatStops",
+        choices: ["yes", "no", "not sure"]
+      }
+    },
+    heat_returns_after_cooldown: {
+      assistant: "If you let the dryer cool down and start it again, does the heat come back for a while?",
+      input: {
+        type: "choice",
+        key: "heatReturnsAfterCooldown",
+        choices: ["yes", "no", "not sure"]
+      }
+    },
+
     main_symptom: {
       assistant: "What is the single main symptom right now, and when does it happen?",
       input: {
@@ -3263,40 +3458,42 @@ async function chooseNextDiagnosticAction({ session }) {
       }
     }
   };
-function hasMeaningfulDetailsAnswer() {
-  return hasMeaningfulAnswerInFamily("details") || hasMeaningfulAnswerInFamily("symptomDetails");
-}
 
-function wasDetailsAlreadyAsked() {
-  return alreadyAskedQuestion(session, "details") || alreadyAskedQuestion(session, "symptomDetails");
-}
-
-function shouldAvoidGenericDetails() {
-  return hasMeaningfulDetailsAnswer() || wasDetailsAlreadyAsked();
-}
   function mapEvidenceKeyToIntentKey(evidenceKey) {
-  const map = {
-    when_happens: "whenHappens",
-    timing: "timing",
-    location: "location",
-    sound_type: "soundType",
-    door_stops_noise: "doorStopsNoise",
-    frost_buildup: "frostBuildup",
-    error_codes: "errorCodes",
-    drum_moves_by_hand: "drumMovesByHand",
-    door_switch_held_effect: "doorSwitchHeldEffect",
-    door_switch_response: "doorSwitchResponse",
-    main_symptom: "symptomDetails",
-    details: "details"
-  };
-  return map[evidenceKey] || evidenceKey;
-}
+    const map = {
+      when_happens: "whenHappens",
+      timing: "timing",
+      location: "location",
+      sound_type: "soundType",
+      door_stops_noise: "doorStopsNoise",
+      frost_buildup: "frostBuildup",
+      error_codes: "errorCodes",
+      drum_moves_by_hand: "drumMovesByHand",
+      door_switch_held_effect: "doorSwitchHeldEffect",
+      door_switch_response: "doorSwitchResponse",
+      main_symptom: "symptomDetails",
+      details: "details",
+
+      airflow_strength: "airflowStrength",
+      vent_airflow: "airflowStrength",
+      outside_vent_airflow: "airflowStrength",
+      vent_restriction: "ventRestriction",
+      airflow_restriction: "ventRestriction",
+      lint_blockage: "ventRestriction",
+      drum_spins_when_heat_stops: "drumSpinsWhenHeatStops",
+      drum_continues_spinning: "drumSpinsWhenHeatStops",
+      heat_returns_after_cooldown: "heatReturnsAfterCooldown",
+      restarts_after_cooling: "heatReturnsAfterCooldown"
+    };
+
+    return map[evidenceKey] || evidenceKey;
+  }
 
   function getIntentFamily(intentKey) {
     const k = normalizeText(intentKey);
 
     if (["whenHappens", "timing"].includes(k)) return "timing_family";
-    if (["symptomDetails", "issueDescription", "description", "symptomDescription", "main_symptom"].includes(k)) {
+    if (["symptomDetails", "issueDescription", "description", "symptomDescription", "main_symptom", "details"].includes(k)) {
       return "main_symptom_family";
     }
     if (["location"].includes(k)) return "location_family";
@@ -3306,6 +3503,8 @@ function shouldAvoidGenericDetails() {
     if (["errorCodes"].includes(k)) return "error_code_family";
     if (["drumMovesByHand"].includes(k)) return "drum_hand_family";
     if (["doorSwitchHeldEffect"].includes(k)) return "door_switch_effect_family";
+    if (["airflowStrength", "ventRestriction"].includes(k)) return "airflow_family";
+    if (["drumSpinsWhenHeatStops", "heatReturnsAfterCooldown"].includes(k)) return "heat_behavior_family";
 
     return k;
   }
@@ -3315,14 +3514,16 @@ function shouldAvoidGenericDetails() {
 
     const familyMembers = {
       timing_family: ["whenHappens", "timing"],
-      main_symptom_family: ["symptomDetails", "issueDescription", "description", "symptomDescription"],
+      main_symptom_family: ["symptomDetails", "issueDescription", "description", "symptomDescription", "details"],
       location_family: ["location"],
       sound_family: ["soundType"],
       door_noise_family: ["doorStopsNoise"],
       frost_family: ["frostBuildup"],
       error_code_family: ["errorCodes"],
       drum_hand_family: ["drumMovesByHand"],
-      door_switch_effect_family: ["doorSwitchHeldEffect"]
+      door_switch_effect_family: ["doorSwitchHeldEffect"],
+      airflow_family: ["airflowStrength", "ventRestriction"],
+      heat_behavior_family: ["drumSpinsWhenHeatStops", "heatReturnsAfterCooldown"]
     };
 
     const members = familyMembers[family] || [intentKey];
@@ -3334,18 +3535,32 @@ function shouldAvoidGenericDetails() {
 
     const familyMembers = {
       timing_family: ["whenHappens", "timing"],
-      main_symptom_family: ["symptomDetails", "issueDescription", "description", "symptomDescription"],
+      main_symptom_family: ["symptomDetails", "issueDescription", "description", "symptomDescription", "details"],
       location_family: ["location"],
       sound_family: ["soundType"],
       door_noise_family: ["doorStopsNoise"],
       frost_family: ["frostBuildup"],
       error_code_family: ["errorCodes"],
       drum_hand_family: ["drumMovesByHand"],
-      door_switch_effect_family: ["doorSwitchHeldEffect"]
+      door_switch_effect_family: ["doorSwitchHeldEffect"],
+      airflow_family: ["airflowStrength", "ventRestriction"],
+      heat_behavior_family: ["drumSpinsWhenHeatStops", "heatReturnsAfterCooldown"]
     };
 
     const members = familyMembers[family] || [intentKey];
     return members.some((member) => alreadyAskedQuestion(session, member));
+  }
+
+  function hasMeaningfulDetailsAnswer() {
+    return hasMeaningfulAnswerInFamily("details") || hasMeaningfulAnswerInFamily("symptomDetails");
+  }
+
+  function wasDetailsAlreadyAsked() {
+    return alreadyAskedQuestion(session, "details") || alreadyAskedQuestion(session, "symptomDetails");
+  }
+
+  function shouldAvoidGenericDetails() {
+    return hasMeaningfulDetailsAnswer() || wasDetailsAlreadyAsked();
   }
 
   function isQuestionStillUseful(evidenceKey) {
@@ -3366,40 +3581,77 @@ function shouldAvoidGenericDetails() {
 
     return true;
   }
+
   function hasDryerNoStartCoreEvidence() {
-  const appliance = normalizeApplianceType(session.appliance);
-  const family = normalizeText(session.diagnosis.reasoning?.symptomFamily || "").toLowerCase();
+    if (!(appliance === "dryer" && symptomFamily === "no_start")) return false;
 
-  if (!(appliance === "dryer" && family === "no_start")) return false;
+    const soundType = normalizeText(String(evidenceProfile.sound_type || "")).toLowerCase();
+    const drumMoves = normalizeText(String(evidenceProfile.drum_moves_by_hand || "")).toLowerCase();
+    const doorEffect = normalizeText(String(evidenceProfile.door_switch_held_effect || "")).toLowerCase();
+    const drumSpin = normalizeText(String(evidenceProfile.drum_spin_status || "")).toLowerCase();
 
-  const soundType = normalizeText(String(evidenceProfile.sound_type || "")).toLowerCase();
-  const drumMoves = normalizeText(String(evidenceProfile.drum_moves_by_hand || "")).toLowerCase();
-  const doorEffect = normalizeText(String(evidenceProfile.door_switch_held_effect || "")).toLowerCase();
-  const drumSpin = normalizeText(String(evidenceProfile.drum_spin_status || "")).toLowerCase();
+    const soundOk =
+      soundType.includes("hum") ||
+      soundType.includes("buzz") ||
+      soundType.includes("no sound") ||
+      soundType === "none" ||
+      soundType.includes("none");
 
-  const soundOk =
-    soundType.includes("hum") ||
-    soundType.includes("buzz") ||
-    soundType.includes("no sound") ||
-    soundType === "none" ||
-    soundType.includes("none");
+    const drumMovesOk = drumMoves.includes("free");
 
-  const drumMovesOk = drumMoves.includes("free");
+    const doorOk =
+      doorEffect.includes("heater") ||
+      doorEffect.includes("tries") ||
+      doorEffect.includes("nothing changes");
 
-  const doorOk =
-    doorEffect.includes("heater") ||
-    doorEffect.includes("tries") ||
-    doorEffect.includes("nothing changes");
+    const spinOk =
+      drumSpin.includes("not") ||
+      drumSpin.includes("no");
 
-  const spinOk =
-    drumSpin.includes("not") ||
-    drumSpin.includes("no");
+    return soundOk && drumMovesOk && doorOk && spinOk;
+  }
 
-  return soundOk && drumMovesOk && doorOk && spinOk;
-}
+  function isDryerHeatCase() {
+    if (appliance !== "dryer") return false;
+
+    return (
+      symptomFamily === "no_heat" ||
+      symptomFamily === "intermittent_heat" ||
+      symptomFamily === "poor_drying" ||
+      userDescription.includes("not heating") ||
+      userDescription.includes("no heat") ||
+      userDescription.includes("stops heating") ||
+      userDescription.includes("heat stops") ||
+      userDescription.includes("heats sometimes") ||
+      userDescription.includes("after cooling") ||
+      userDescription.includes("cooling down") ||
+      userDescription.includes("multiple cycles") ||
+      userDescription.includes("takes too long")
+    );
+  }
+
   let targetEvidenceKey = null;
 
-  if (top && second) {
+  // Prefer airflow and heat-behavior questions first in dryer heat cases
+  if (isDryerHeatCase()) {
+    const airflowEvidenceMissing =
+      isQuestionStillUseful("airflow_strength") || isQuestionStillUseful("vent_restriction");
+
+    const heatBehaviorMissing =
+      isQuestionStillUseful("drum_spins_when_heat_stops") || isQuestionStillUseful("heat_returns_after_cooldown");
+
+    if (airflowEvidenceMissing) {
+      targetEvidenceKey = isQuestionStillUseful("airflow_strength")
+        ? "airflow_strength"
+        : "vent_restriction";
+    } else if (heatBehaviorMissing) {
+      targetEvidenceKey = isQuestionStillUseful("heat_returns_after_cooldown")
+        ? "heat_returns_after_cooldown"
+        : "drum_spins_when_heat_stops";
+    }
+  }
+
+  if (!targetEvidenceKey && top && second) {
     const topContrastKeys = contrastMap[top.component]?.evidenceKeys || [];
     const secondContrastKeys = contrastMap[second.component]?.evidenceKeys || [];
     const union = [...new Set([...topContrastKeys, ...secondContrastKeys])];
@@ -3412,76 +3664,88 @@ function shouldAvoidGenericDetails() {
 
   if (!targetEvidenceKey && missingEvidenceRank.length > 0) {
     const nextMissing = missingEvidenceRank.find((x) => isQuestionStillUseful(x.key));
-    if (nextMissing) targetEvidenceKey = nextMissing.key;
+    if (nextMissing) {
+      targetEvidenceKey = nextMissing.key;
+    }
   }
 
-   if (!targetEvidenceKey) {
-  if (hasDryerNoStartCoreEvidence()) {
-    targetEvidenceKey = "details_locked_guard";
-  } else if (!hasMeaningfulAnswerInFamily("symptomDetails")) {
-    targetEvidenceKey = "main_symptom";
-  } else if (!shouldAvoidGenericDetails()) {
-    targetEvidenceKey = "details";
-  } else {
-    targetEvidenceKey = null;
+  if (!targetEvidenceKey) {
+    if (hasDryerNoStartCoreEvidence()) {
+      targetEvidenceKey = "details_locked_guard";
+    } else if (!hasMeaningfulAnswerInFamily("symptomDetails")) {
+      targetEvidenceKey = "main_symptom";
+    } else if (!shouldAvoidGenericDetails()) {
+      targetEvidenceKey = "details";
+    } else {
+      targetEvidenceKey = null;
+    }
   }
-}
 
   const rawFallback = selectHighValueFallbackQuestion(session);
-const fallbackInput = normalizeTurnInput({ input: rawFallback?.input });
-const fallbackIntentKey = normalizeText(fallbackInput?.key || "");
+  const fallbackInput = normalizeTurnInput({ input: rawFallback?.input });
+  const fallbackIntentKey = normalizeText(fallbackInput?.key || "");
 
-const fallbackWouldDuplicateFamily =
-  fallbackIntentKey && hasMeaningfulAnswerInFamily(fallbackIntentKey);
+  const fallbackWouldDuplicateFamily =
+    fallbackIntentKey && hasMeaningfulAnswerInFamily(fallbackIntentKey);
 
-const safeFallback =
-  fallbackWouldDuplicateFamily || shouldAvoidGenericDetails()
-    ? {
-        assistant: "",
-        input: { type: "none", key: "", choices: [] },
-        questionMeta: {
-          goal: "hold",
-          reason: "No safe fallback question remains without repeating already captured evidence.",
-          rulesUsed: ["safe_fallback_guard"],
-          eliminates: [],
-          narrowsTo: hypotheses.slice(0, 3).map((h) => h.component).filter(Boolean)
-        }
-      }
-    : rawFallback;
-
-    const baseQuestion =
-  targetEvidenceKey === "details_locked_guard"
-    ? {
-        assistant: "I have enough to identify the most likely cause. Next we’ll confirm the part.",
-        input: { type: "none", key: "", choices: [] }
-      }
-    : targetEvidenceKey
-      ? questionLibrary[targetEvidenceKey] || {
-          assistant: safeFallback.assistant,
-          input: safeFallback.input
-        }
-      : {
+  const safeFallback =
+    fallbackWouldDuplicateFamily || shouldAvoidGenericDetails()
+      ? {
           assistant: "",
+          input: { type: "none", key: "", choices: [] },
+          questionMeta: {
+            goal: "hold",
+            reason: "No safe fallback question remains without repeating already captured evidence.",
+            rulesUsed: ["safe_fallback_guard"],
+            eliminates: [],
+            narrowsTo: hypotheses.slice(0, 3).map((h) => h.component).filter(Boolean)
+          }
+        }
+      : rawFallback;
+
+  const baseQuestion =
+    targetEvidenceKey === "details_locked_guard"
+      ? {
+          assistant: "I have enough to identify the most likely cause. Next we’ll confirm the part.",
           input: { type: "none", key: "", choices: [] }
-        };
+        }
+      : targetEvidenceKey
+        ? questionLibrary[targetEvidenceKey] || {
+            assistant: safeFallback.assistant,
+            input: safeFallback.input
+          }
+        : {
+            assistant: "",
+            input: { type: "none", key: "", choices: [] }
+          };
 
   const topName = top?.component || "top candidate";
   const secondName = second?.component || null;
 
   const goal = top && second ? "disambiguate" : "confirm";
-    const reason =
+  const reason =
     targetEvidenceKey === "details_locked_guard"
       ? "Core dryer no-start evidence is already present, so the flow should lock instead of asking another generic observation."
-      : targetEvidenceKey === "details"
-        ? "A fresh direct observation is needed because current evidence is still too broad."
-        : secondName
-          ? `This helps separate ${topName} from ${secondName}.`
-          : `This helps verify whether ${topName} is actually the best fit.`;
+      : targetEvidenceKey === "airflow_strength"
+        ? "Intermittent dryer heat should check airflow before locking onto a replacement part."
+        : targetEvidenceKey === "vent_restriction"
+          ? "A blocked vent or lint restriction is a common cause of intermittent dryer heating."
+          : targetEvidenceKey === "heat_returns_after_cooldown"
+            ? "A cooldown pattern helps separate airflow or thermal protection issues from other causes."
+            : targetEvidenceKey === "drum_spins_when_heat_stops"
+              ? "This helps confirm whether heat is failing while drum movement continues."
+              : targetEvidenceKey === "details"
+                ? "A fresh direct observation is needed because current evidence is still too broad."
+                : secondName
+                  ? `This helps separate ${topName} from ${secondName}.`
+                  : `This helps verify whether ${topName} is actually the best fit.`;
+
   const normalizedInput = normalizeTurnInput({ input: baseQuestion.input });
+
   const assistant =
     normalizeText(baseQuestion.assistant) ||
     normalizeText(safeFallback.assistant) ||
-    "Tell me the next most noticeable thing you observe when the issue happens.";
+    "";
 
   const normalizedIntentKey = normalizeText(normalizedInput?.key || "");
   if (normalizedIntentKey && hasMeaningfulAnswerInFamily(normalizedIntentKey)) {
@@ -3499,21 +3763,23 @@ const safeFallback =
       }
     };
   }
-if (!targetEvidenceKey && (!safeFallback || normalizeText(safeFallback?.input?.type) === "none")) {
-  return {
-    question: {
-      assistant: "I have enough information collected that I should stop asking repeated questions and move to review or lock the diagnosis.",
-      input: { type: "none", key: "", choices: [] }
-    },
-    questionMeta: {
-      goal: "stop_repeat_loop",
-      reason: "No useful unanswered diagnostic question remains.",
-      rulesUsed: ["terminal_no_repeat_guard"],
-      eliminates: [],
-      narrowsTo: hypotheses.slice(0, 3).map((h) => h.component).filter(Boolean)
-    }
-  };
-}
+
+  if (!targetEvidenceKey && (!safeFallback || normalizeText(safeFallback?.input?.type) === "none")) {
+    return {
+      question: {
+        assistant: "I have enough information collected that I should stop asking repeated questions and move to review or lock the diagnosis.",
+        input: { type: "none", key: "", choices: [] }
+      },
+      questionMeta: {
+        goal: "stop_repeat_loop",
+        reason: "No useful unanswered diagnostic question remains.",
+        rulesUsed: ["terminal_no_repeat_guard"],
+        eliminates: [],
+        narrowsTo: hypotheses.slice(0, 3).map((h) => h.component).filter(Boolean)
+      }
+    };
+  }
+
   const questionMeta = {
     goal,
     reason,
@@ -3552,24 +3818,7 @@ if (!targetEvidenceKey && (!safeFallback || normalizeText(safeFallback?.input?.t
     questionMeta
   };
 }
-  function hasDryerNoStartCoreEvidence() {
-    const appliance = normalizeApplianceType(session.appliance);
-    const family = normalizeText(session.diagnosis.reasoning?.symptomFamily || "").toLowerCase();
-
-    if (!(appliance === "dryer" && family === "no_start")) return false;
-
-    const soundType = normalizeText(String(evidenceProfile.sound_type || "")).toLowerCase();
-    const drumMoves = normalizeText(String(evidenceProfile.drum_moves_by_hand || "")).toLowerCase();
-    const doorEffect = normalizeText(String(evidenceProfile.door_switch_held_effect || "")).toLowerCase();
-    const drumSpin = normalizeText(String(evidenceProfile.drum_spin_status || "")).toLowerCase();
-
-    return (
-      (soundType === "hum or buzz" || soundType === "humming" || soundType === "buzzing") &&
-      drumMoves === "moves freely" &&
-      (doorEffect === "heater comes on" || doorEffect === "drum tries to move") &&
-      drumSpin === "does not spin"
-    );
-  }
+ 
 function evaluateLockReadiness(session) {
   ensureReasoning(session);
 
@@ -3615,6 +3864,15 @@ function evaluateLockReadiness(session) {
 
   const appliance = normalizeApplianceType(session.appliance);
   const family = normalizeText(session.diagnosis.reasoning?.symptomFamily || "").toLowerCase();
+  const userDescription = normalizeText(session.diagnosis?.userDescription || "").toLowerCase();
+
+  function hasMeaningful(value) {
+    return value != null && value !== "" && value !== "not sure";
+  }
+
+  function textContainsAny(text, phrases) {
+    return phrases.some((phrase) => text.includes(phrase));
+  }
 
   if (appliance === "dryer" && family === "no_start") {
     const soundType = normalizeText(String(evidenceProfile.sound_type || "")).toLowerCase();
@@ -3662,6 +3920,124 @@ function evaluateLockReadiness(session) {
       result.supportingEvidence = supportingEvidence;
       session.diagnosis.reasoning.lockDecision = result;
       return true;
+    }
+  }
+
+  const isDryerHeatCase =
+    appliance === "dryer" &&
+    (
+      family === "no_heat" ||
+      family === "intermittent_heat" ||
+      family === "poor_drying" ||
+      textContainsAny(userDescription, [
+        "no heat",
+        "not heating",
+        "stops heating",
+        "heat stops",
+        "heats sometimes",
+        "works again after cooling",
+        "after cooling down",
+        "multiple cycles to dry",
+        "takes too long to dry"
+      ])
+    );
+
+  if (isDryerHeatCase) {
+    const airflowStrength = normalizeText(String(
+      evidenceProfile.airflow_strength ||
+      evidenceProfile.vent_airflow ||
+      evidenceProfile.outside_vent_airflow ||
+      ""
+    )).toLowerCase();
+
+    const ventRestriction = normalizeText(String(
+      evidenceProfile.vent_restriction ||
+      evidenceProfile.airflow_restriction ||
+      evidenceProfile.lint_blockage ||
+      ""
+    )).toLowerCase();
+
+    const drumStillSpinsWhenHeatStops = normalizeText(String(
+      evidenceProfile.drum_continues_spinning ||
+      evidenceProfile.drum_spins_when_heat_stops ||
+      ""
+    )).toLowerCase();
+
+    const heatReturnsAfterCooldown = normalizeText(String(
+      evidenceProfile.heat_returns_after_cooldown ||
+      evidenceProfile.restarts_after_cooling ||
+      ""
+    )).toLowerCase();
+
+    const hasAirflowEvidence =
+      hasMeaningful(airflowStrength) ||
+      hasMeaningful(ventRestriction);
+
+    const hasHeatBehaviorEvidence =
+      hasMeaningful(drumStillSpinsWhenHeatStops) ||
+      hasMeaningful(heatReturnsAfterCooldown);
+
+    const airflowSuggestsRestriction =
+      airflowStrength.includes("weak") ||
+      airflowStrength.includes("low") ||
+      airflowStrength.includes("poor") ||
+      ventRestriction.includes("yes") ||
+      ventRestriction.includes("restricted") ||
+      ventRestriction.includes("blocked") ||
+      ventRestriction.includes("clogged");
+
+    const cooldownPatternPresent =
+      heatReturnsAfterCooldown.includes("yes") ||
+      heatReturnsAfterCooldown.includes("returns") ||
+      heatReturnsAfterCooldown.includes("after cooling");
+
+    const motorLooksWrongForThisCase =
+      normalizeText(String(top.component || "")).toLowerCase().includes("motor") &&
+      !textContainsAny(userDescription, ["won't start", "does not spin", "not spinning", "hums"]);
+
+    if (!hasAirflowEvidence) {
+      result.reason = "dryer_heat_needs_airflow_check";
+      result.missingEvidence = [...missingEvidence, "airflow_strength"];
+      result.conflictingEvidence = conflictingEvidence;
+      result.supportingEvidence = supportingEvidence;
+      session.diagnosis.reasoning.lockDecision = result;
+      return false;
+    }
+
+    if (!hasHeatBehaviorEvidence) {
+      result.reason = "dryer_heat_needs_behavior_check";
+      result.missingEvidence = [...missingEvidence, "heat_returns_after_cooldown"];
+      result.conflictingEvidence = conflictingEvidence;
+      result.supportingEvidence = supportingEvidence;
+      session.diagnosis.reasoning.lockDecision = result;
+      return false;
+    }
+
+    if (airflowSuggestsRestriction) {
+      result.reason = "dryer_heat_airflow_issue_not_part_lock_ready";
+      result.missingEvidence = missingEvidence;
+      result.conflictingEvidence = conflictingEvidence;
+      result.supportingEvidence = supportingEvidence;
+      session.diagnosis.reasoning.lockDecision = result;
+      return false;
+    }
+
+    if (motorLooksWrongForThisCase) {
+      result.reason = "dryer_heat_motor_lock_blocked";
+      result.missingEvidence = missingEvidence;
+      result.conflictingEvidence = [...conflictingEvidence, "top hypothesis does not match intermittent heat symptom pattern"];
+      result.supportingEvidence = supportingEvidence;
+      session.diagnosis.reasoning.lockDecision = result;
+      return false;
+    }
+
+    if (cooldownPatternPresent && topConfidence < 84) {
+      result.reason = "dryer_heat_needs_higher_confidence";
+      result.missingEvidence = missingEvidence;
+      result.conflictingEvidence = conflictingEvidence;
+      result.supportingEvidence = supportingEvidence;
+      session.diagnosis.reasoning.lockDecision = result;
+      return false;
     }
   }
 
@@ -3726,7 +4102,11 @@ Return only valid JSON:
       "powerRequired": "off" | "on",
       "requiresConfirmKey": "",
       "confirmPrompt": "",
-      "instructions": [""]
+      "instructions": [""],
+      "whyItMatters": "",
+      "safetyWarning": "",
+      "expectedResult": "",
+      "ifNot": ""
     }
   ]
 }
@@ -3735,17 +4115,41 @@ Rules:
 Generate a safe, practical repair plan for the specific appliance and component.
 Use 5 to 8 steps when possible.
 The first step must be a safety and preparation step with powerRequired set to "off".
-Any disassembly, wiring, connector, or component removal step must have powerRequired set to "off".
+Any disassembly, wiring, connector, panel removal, or component removal step must have powerRequired set to "off".
 Only the final live verification step may require powerRequired set to "on".
+
 Each step must have:
 - short stable id
 - concise title
+- powerRequired set to "off" or "on"
+- requiresConfirmKey
+- confirmPrompt
 - 2 to 5 instruction lines
-- a confirmPrompt if requiresConfirmKey is present
-Do not return paragraphs.
-Do not include warnings outside the step structure.
-Do not invent impossible actions.
-If certainty is low, prefer a cautious inspection and replacement workflow rather than over-specific claims.
+- whyItMatters
+- safetyWarning
+- expectedResult
+- ifNot
+
+Field rules:
+- instructions must be direct action steps only.
+- whyItMatters must explain the purpose of the step in plain language.
+- safetyWarning must explain the specific safety risk for that step.
+- If there is no unique warning, safetyWarning should say "Keep power off and avoid forcing parts."
+- expectedResult must tell the user what they should see or confirm before moving on.
+- ifNot must tell the user what to do if the expected result does not happen.
+- confirmPrompt must match the actual step and be easy for the user to confirm.
+
+Safety rules:
+- Do not tell the user to touch live wiring.
+- Do not include sealed system, refrigerant, gas line, or high voltage capacitor repair steps as DIY instructions.
+- If the repair involves gas, refrigerant, microwave high voltage, burned wiring, sparks, smoke, or shock risk, return a cautious inspection and escalation plan instead of DIY replacement steps.
+- If certainty is low, prefer a cautious inspection and replacement workflow rather than over-specific claims.
+
+Output rules:
+- Do not return paragraphs.
+- Do not include warnings outside the step structure.
+- Do not invent impossible actions.
+- Return valid JSON only.
 `.trim();
 
   const userPayload = {
@@ -3794,6 +4198,7 @@ If certainty is low, prefer a cautious inspection and replacement workflow rathe
         : [];
 
       const title = normalizeText(step?.title) || `Step ${index + 1}`;
+
       const id =
         normalizeText(step?.id)
           .toLowerCase()
@@ -3814,13 +4219,33 @@ If certainty is low, prefer a cautious inspection and replacement workflow rathe
         normalizeText(step?.confirmPrompt) ||
         `Confirm you completed: ${title}.`;
 
+      const whyItMatters =
+        normalizeText(step?.whyItMatters) ||
+        "This step helps confirm the repair is being done in the correct order and reduces the chance of replacing the wrong part.";
+
+      const safetyWarning =
+        normalizeText(step?.safetyWarning) ||
+        "Keep power off and avoid forcing parts.";
+
+      const expectedResult =
+        normalizeText(step?.expectedResult) ||
+        "You should be able to clearly confirm this step is complete before moving on.";
+
+      const ifNot =
+        normalizeText(step?.ifNot) ||
+        "Stop and recheck the previous step. If something does not look right or does not move safely, do not force it.";
+
       return {
         id,
         title,
         powerRequired,
         requiresConfirmKey,
         confirmPrompt,
-        instructions
+        instructions,
+        whyItMatters,
+        safetyWarning,
+        expectedResult,
+        ifNot
       };
     })
     .filter((step) => step.instructions.length > 0);
@@ -3828,6 +4253,7 @@ If certainty is low, prefer a cautious inspection and replacement workflow rathe
   if (!steps.length) return null;
 
   const firstStep = steps[0];
+
   if (firstStep.powerRequired !== "off") {
     firstStep.powerRequired = "off";
   }
@@ -3837,10 +4263,12 @@ If certainty is low, prefer a cautious inspection and replacement workflow rathe
   }
 
   const liveSteps = steps.filter((x) => x.powerRequired === "on");
+
   if (liveSteps.length > 1) {
     for (let i = 0; i < steps.length - 1; i += 1) {
       steps[i].powerRequired = "off";
     }
+
     steps[steps.length - 1].powerRequired = "on";
   }
 
@@ -3896,13 +4324,33 @@ function normalizeRepairSteps(steps) {
         normalizeText(step?.confirmPrompt) ||
         "Confirm you completed this step and are ready to continue.";
 
+      const whyItMatters =
+        normalizeText(step?.whyItMatters) ||
+        "This step helps keep the repair in the correct order and reduces the chance of replacing or disturbing the wrong part.";
+
+      const safetyWarning =
+        normalizeText(step?.safetyWarning) ||
+        "Keep power off and avoid forcing parts.";
+
+      const expectedResult =
+        normalizeText(step?.expectedResult) ||
+        "You should be able to clearly confirm this step is complete before moving on.";
+
+      const ifNot =
+        normalizeText(step?.ifNot) ||
+        "Stop and recheck the previous step. If something does not look right or does not move safely, do not force it.";
+
       return {
         id: safeId,
         title: safeTitle,
         powerRequired,
         requiresConfirmKey: confirmKey,
         instructions,
-        confirmPrompt
+        confirmPrompt,
+        whyItMatters,
+        safetyWarning,
+        expectedResult,
+        ifNot
       };
     })
     .filter((step) => step.instructions.length > 0);
@@ -3912,10 +4360,12 @@ function normalizeRepairSteps(steps) {
   normalized[0].powerRequired = "off";
 
   const liveSteps = normalized.filter((x) => x.powerRequired === "on");
+
   if (liveSteps.length > 1) {
     for (let i = 0; i < normalized.length - 1; i += 1) {
       normalized[i].powerRequired = "off";
     }
+
     normalized[normalized.length - 1].powerRequired = "on";
   }
 
@@ -5307,6 +5757,66 @@ function buildStatusSnapshot(session) {
     modelNumber: pl?.modelNumber || null
   };
 }
+function buildDiagnosisResponse(session, locked = false) {
+  ensureReasoning(session);
+
+  const dx = session.diagnosis || {};
+  const reasoning = dx.reasoning || {};
+  const hypotheses = Array.isArray(reasoning.hypotheses) ? reasoning.hypotheses : [];
+  const top = hypotheses[0] || null;
+
+  const lockDecision = reasoning.lockDecision || {};
+
+  return {
+    locked: locked === true,
+    confidence: normalizeConfidence(dx.confidence || top?.confidence || 0),
+    suggestedComponent: dx.suggestedComponent || top?.component || null,
+    component: dx.component || dx.suggestedComponent || top?.component || null,
+    symptomFamily: reasoning.symptomFamily || null,
+
+    summaryForUser: top
+      ? `Based on your answers, the most likely issue is ${top.component}.`
+      : "I am still narrowing this down.",
+
+    reasoning: {
+      consideredCauses: hypotheses.slice(0, 4).map((h) => ({
+        component: h.component,
+        confidence: normalizeConfidence(h.confidence || 0),
+        reason: h.reason || ""
+      })),
+
+      supportingEvidence: Array.isArray(top?.supportingEvidence)
+        ? top.supportingEvidence
+        : [],
+
+      conflictingEvidence: Array.isArray(top?.conflictingEvidence)
+        ? top.conflictingEvidence
+        : [],
+
+      missingEvidence: Array.isArray(lockDecision?.missingEvidence)
+        ? lockDecision.missingEvidence
+        : Array.isArray(top?.missingEvidence)
+          ? top.missingEvidence
+          : [],
+
+      lockReason: lockDecision?.reason || null,
+      safeToContinue: session.safetyProfile?.blockRepair !== true,
+
+      nextStep: locked
+        ? "Confirm the model number so I can identify the correct replacement part."
+        : "Answer one more question so I can avoid guessing."
+    },
+
+    topHypotheses: hypotheses.slice(0, 3).map((h) => ({
+      component: h.component,
+      confidence: normalizeConfidence(h.confidence || 0),
+      reason: h.reason || "",
+      supportingEvidence: Array.isArray(h.supportingEvidence) ? h.supportingEvidence : [],
+      conflictingEvidence: Array.isArray(h.conflictingEvidence) ? h.conflictingEvidence : [],
+      missingEvidence: Array.isArray(h.missingEvidence) ? h.missingEvidence : []
+    }))
+  };
+}
 
 function buildSuccessResponse(session, payload) {
   const safety = payload?.safety || buildSafetySummary(session);
@@ -5804,7 +6314,44 @@ function buildInputsUsed(pl, cacheKey) {
     partLabelNumber: pl.componentIdentifiers?.partLabelNumber || null,
     cacheKey
   };
-}/* =========================================================
+  
+}
+function buildRepairPrep(session, template = {}) {
+  const appliance = normalizeApplianceType(session.appliance);
+  const component =
+    session.partLookup?.suspectedComponent ||
+    session.diagnosis?.suggestedComponent ||
+    session.diagnosis?.component ||
+    "replacement part";
+
+  const tools = Array.isArray(template.tools) ? template.tools : [];
+
+  return {
+    component,
+    partName: session.partLookup?.resolution?.partName || null,
+    oemPartNumber: session.partLookup?.resolution?.oemPartNumber || null,
+    modelNumber: session.partLookup?.modelNumber || null,
+    requiredTools: tools,
+    optionalTools: ["Small container for screws", "Phone camera for reference photos"],
+    safetyGear: ["Work gloves", "Eye protection"],
+    estimatedTimeMinutes: appliance === "dishwasher" ? 45 : appliance === "dryer" ? 45 : 60,
+    difficulty: "Moderate",
+    skillLevel: "DIY comfortable with basic hand tools",
+    commonMistakes: [
+      "Starting before power is off",
+      "Forgetting to photograph wiring before disconnecting",
+      "Ordering a part before confirming the model number"
+    ],
+    stopAndCallProWhen: [
+      "You see burned wiring",
+      "You smell gas or burning",
+      "You are unsure how to safely access the part",
+      "The repair requires sealed system or high voltage work"
+    ]
+  };
+}
+
+/* =========================================================
    Repair templates
 ========================================================= */
 
@@ -6900,24 +7447,39 @@ if (shouldLock) {
   session.diagnosis.recommendedPath = "repair";
   session.diagnosis.status = "complete";
   session.diagnosis.stage = "locked";
-  session.diagnosis.component = session.diagnosis.suggestedComponent || session.diagnosis.component || null;
+  session.diagnosis.component =
+    session.diagnosis.suggestedComponent || session.diagnosis.component || null;
 
   session.partLookup = session.partLookup || {};
-  session.partLookup.applianceType = session.partLookup.applianceType || session.appliance || null;
+  session.partLookup.applianceType =
+    session.partLookup.applianceType || session.appliance || null;
   session.partLookup.suspectedComponent =
-    session.partLookup.suspectedComponent || session.diagnosis.suggestedComponent || null;
+    session.partLookup.suspectedComponent ||
+    session.diagnosis.suggestedComponent ||
+    session.diagnosis.component ||
+    null;
 
   session.mode = "part_lookup";
 
+  session.diagnosis.proposedHypothesis =
+    session.diagnosis.suggestedComponent || session.diagnosis.component || null;
+
+  const dxPayload = buildDiagnosisResponse(session, true);
+
   await req.saveFxSession();
-  session.diagnosis.proposedHypothesis = session.diagnosis.suggestedComponent || session.diagnosis.component || null;
 
   const responseObj = buildSuccessResponse(session, {
     type: "diagnose_locked",
     nextAction: "part_lookup",
+    diagnosis: dxPayload,
     ui: {
-      assistantMessage: "I’m confident in the issue. Let’s confirm the part.",
+      assistantMessage:
+        `${dxPayload.summaryForUser} I reached this conclusion from the evidence collected so far. Before we move into repair, I need the model number so I can identify the correct replacement part.`,
       input: { type: "none", key: "", choices: [] }
+    },
+    data: {
+      reasoning: dxPayload.reasoning,
+      topHypotheses: dxPayload.topHypotheses
     }
   });
 
@@ -6928,27 +7490,39 @@ if (shouldLock) {
 const next = await chooseNextDiagnosticAction({ session });
 
 if (next?.question?.input?.type === "none") {
-  session.diagnosis.locked = true;
-  session.diagnosis.recommendedPath = "repair";
-  session.diagnosis.status = "complete";
-  session.diagnosis.stage = "locked";
+  const lockDecision = session.diagnosis?.reasoning?.lockDecision || {};
+
+  session.diagnosis.locked = false;
+  session.diagnosis.recommendedPath = "diagnose";
+  session.diagnosis.status = "running";
+  session.diagnosis.stage = "review";
   session.diagnosis.component = session.diagnosis.suggestedComponent || session.diagnosis.component || null;
 
-  session.partLookup = session.partLookup || {};
-  session.partLookup.applianceType = session.partLookup.applianceType || session.appliance || null;
-  session.partLookup.suspectedComponent =
-    session.partLookup.suspectedComponent || session.diagnosis.suggestedComponent || null;
+  session.mode = "diagnose";
 
-  session.mode = "part_lookup";
+  setCurrentQuestion(session, {
+    type: "text",
+    key: "details",
+    choices: []
+  });
 
   await req.saveFxSession();
 
   const responseObj = buildSuccessResponse(session, {
-    type: "diagnose_locked",
-    nextAction: "part_lookup",
+    type: "diagnose_turn",
+    nextAction: "diagnose",
+    diagnosis: buildDiagnosisResponse(session, false),
     ui: {
-      assistantMessage: "I’m confident in the issue. Let’s confirm the part.",
-      input: { type: "none", key: "", choices: [] }
+      assistantMessage:
+        "I have narrowed this down, but I do not have enough evidence to recommend a part yet. Give me one more useful detail about what happens when the issue occurs.",
+      input: {
+        type: "text",
+        key: "details",
+        choices: []
+      }
+    },
+    data: {
+      lockDecision
     }
   });
 
@@ -7487,6 +8061,97 @@ async function handleRepairNext(req, res) {
 
   return persistAndRespond(200, payload);
 }
+app.post("/session/repair/prep", requireSession, requireResolvedPartForRepair, async (req, res) => {
+  const session = req.fxSession;
+
+  try {
+    const componentKey =
+      session.partLookup?.suspectedComponent ||
+      session.diagnosis?.suggestedComponent ||
+      session.diagnosis?.component ||
+      "unknown_component";
+
+    const appliance = normalizeApplianceType(session.appliance);
+
+    let template = getRepairTemplate({
+      appliance,
+      componentKey,
+      partName: session.partLookup?.resolution?.partName || null,
+      oemPartNumber: session.partLookup?.resolution?.oemPartNumber || null
+    });
+
+    try {
+      const dynamicPlan = await buildDynamicRepairPlan({ session });
+
+      if (
+        dynamicPlan &&
+        Array.isArray(dynamicPlan.steps) &&
+        dynamicPlan.steps.length > 0
+      ) {
+        template = {
+          tools: Array.isArray(dynamicPlan.tools) ? dynamicPlan.tools : template.tools,
+          steps: normalizeRepairSteps(dynamicPlan.steps)
+        };
+      }
+    } catch (err) {
+      console.error("repair prep dynamic plan failed:", err?.message || err);
+    }
+
+    const normalizedPreparedSteps = normalizeRepairSteps(template.steps || []);
+
+    const preparedPlan = {
+      tools: Array.isArray(template.tools) ? template.tools : [],
+      steps: normalizedPreparedSteps
+    };
+
+    const repairPrep = buildRepairPrep(session, preparedPlan);
+
+    session.repairPrep = repairPrep;
+    session.repairPreparedPlan = preparedPlan;
+
+    await req.saveFxSession();
+
+    return res.json(
+      buildSuccessResponse(session, {
+        type: "repair_prep",
+        nextAction: "repair_start",
+        data: {
+          repairPrep,
+          tools: repairPrep.requiredTools,
+          stepsPreview: Array.isArray(preparedPlan.steps)
+            ? preparedPlan.steps.map((step, index) => ({
+                index,
+                id: step.id,
+                title: step.title,
+                powerRequired: step.powerRequired,
+                whyItMatters: step.whyItMatters || null,
+                safetyWarning: step.safetyWarning || null,
+                expectedResult: step.expectedResult || null,
+                ifNot: step.ifNot || null
+              }))
+            : []
+        },
+        ui: {
+          assistantMessage:
+            "Before we start the repair, review the tools, difficulty, safety gear, and stop conditions so you know what you are getting into.",
+          input: {
+            type: "none",
+            key: "",
+            choices: []
+          }
+        }
+      })
+    );
+  } catch (err) {
+    console.error("repair prep failed:", err);
+
+    return res.status(500).json({
+      error: "Failed to prepare repair preview.",
+      sessionId: session.sessionId,
+      statusSnapshot: buildStatusSnapshot(session)
+    });
+  }
+});
 
 app.post("/session/repair/start", requireSession, requireResolvedPartForRepair, async (req, res) => {
   const session = req.fxSession;
@@ -7512,16 +8177,36 @@ app.post("/session/repair/start", requireSession, requireResolvedPartForRepair, 
     return res.status(409).json(payload);
   }
 
-let template = await buildDynamicRepairPlan({ session });
+  let template = null;
 
-if (Array.isArray(template?.steps) && template.steps.length > 0) {
-  template.steps = normalizeRepairSteps(template.steps);
-} else {
-  template = getRepairTemplate({
-    appliance: session.appliance,
-    componentKey: session.diagnosis.suggestedComponent
-  });
-}
+  if (
+    session.repairPreparedPlan &&
+    Array.isArray(session.repairPreparedPlan.steps) &&
+    session.repairPreparedPlan.steps.length > 0
+  ) {
+    template = {
+      tools: Array.isArray(session.repairPreparedPlan.tools)
+        ? session.repairPreparedPlan.tools
+        : [],
+      steps: normalizeRepairSteps(session.repairPreparedPlan.steps)
+    };
+  } else {
+    template = await buildDynamicRepairPlan({ session });
+
+    if (Array.isArray(template?.steps) && template.steps.length > 0) {
+      template.steps = normalizeRepairSteps(template.steps);
+    } else {
+      template = getRepairTemplate({
+        appliance: session.appliance,
+        componentKey:
+          session.partLookup?.suspectedComponent ||
+          session.diagnosis?.suggestedComponent ||
+          session.diagnosis?.component
+      });
+
+      template.steps = normalizeRepairSteps(template.steps);
+    }
+  }
 
   resetRepairFlowForStart(session);
 
