@@ -3670,16 +3670,29 @@ async function chooseNextDiagnosticAction({ session }) {
   }
 
   if (!targetEvidenceKey) {
-    if (hasDryerNoStartCoreEvidence()) {
-      targetEvidenceKey = "details_locked_guard";
-    } else if (!hasMeaningfulAnswerInFamily("symptomDetails")) {
-      targetEvidenceKey = "main_symptom";
-    } else if (!shouldAvoidGenericDetails()) {
-      targetEvidenceKey = "details";
-    } else {
-      targetEvidenceKey = null;
-    }
+  const smartMissingQuestion = buildBestMissingEvidenceQuestion(
+    session,
+    session.diagnosis?.reasoning?.lockDecision || {}
+  );
+
+  if (smartMissingQuestion) {
+    return {
+      question: {
+        assistant: smartMissingQuestion.assistant,
+        input: normalizeTurnInput({ input: smartMissingQuestion.input })
+      },
+      questionMeta: smartMissingQuestion.questionMeta
+    };
   }
+
+  if (hasDryerNoStartCoreEvidence()) {
+    targetEvidenceKey = "details_locked_guard";
+  } else if (!hasMeaningfulAnswerInFamily("symptomDetails")) {
+    targetEvidenceKey = "main_symptom";
+  } else {
+    targetEvidenceKey = null;
+  }
+}
 
   const rawFallback = selectHighValueFallbackQuestion(session);
   const fallbackInput = normalizeTurnInput({ input: rawFallback?.input });
@@ -3703,21 +3716,28 @@ async function chooseNextDiagnosticAction({ session }) {
         }
       : rawFallback;
 
-  const baseQuestion =
-    targetEvidenceKey === "details_locked_guard"
-      ? {
-          assistant: "I have enough to identify the most likely cause. Next we’ll confirm the part.",
+  const bankQuestion =
+  targetEvidenceKey && !questionLibrary[targetEvidenceKey]
+    ? buildEvidenceQuestionForKey(session, targetEvidenceKey, {
+        narrowsTo: hypotheses.slice(0, 3).map((h) => h.component).filter(Boolean)
+      })
+    : null;
+
+const baseQuestion =
+  targetEvidenceKey === "details_locked_guard"
+    ? {
+        assistant: "I have enough to identify the most likely cause. Next we’ll confirm the part.",
+        input: { type: "none", key: "", choices: [] }
+      }
+    : targetEvidenceKey
+      ? questionLibrary[targetEvidenceKey] || bankQuestion || {
+          assistant: "",
           input: { type: "none", key: "", choices: [] }
         }
-      : targetEvidenceKey
-        ? questionLibrary[targetEvidenceKey] || {
-            assistant: safeFallback.assistant,
-            input: safeFallback.input
-          }
-        : {
-            assistant: "",
-            input: { type: "none", key: "", choices: [] }
-          };
+      : {
+          assistant: "",
+          input: { type: "none", key: "", choices: [] }
+        };
 
   const topName = top?.component || "top candidate";
   const secondName = second?.component || null;
@@ -5184,16 +5204,16 @@ function selectHighValueFallbackQuestion(session) {
     }
 
     return {
-      assistant: "What is the next most noticeable thing you observe when you press Start?",
-      input: { type: "text", key: "details", choices: [] },
-      questionMeta: {
-        goal: "disambiguate",
-        reason: "A fresh observation is better than repeating intake once symptom details are captured.",
-        rulesUsed: ["general_followup"],
-        eliminates: [],
-        narrowsTo: ["top_likely_components"]
-      }
-    };
+  assistant: "",
+  input: { type: "none", key: "", choices: [] },
+  questionMeta: {
+    goal: "hold",
+    reason: "No high value dryer fallback question remains without repeating already captured evidence.",
+    rulesUsed: ["no_generic_details_fallback"],
+    eliminates: [],
+    narrowsTo: ["top_likely_components"]
+  }
+};
   }
 
   if (!hasMeaningfulAnswerByIntent(session, "main_symptom")) {
@@ -5211,16 +5231,16 @@ function selectHighValueFallbackQuestion(session) {
   }
 
   return {
-    assistant: "Tell me the next most noticeable thing you observe when the issue happens.",
-    input: { type: "text", key: "details", choices: [] },
-    questionMeta: {
-      goal: "disambiguate",
-      reason: "A fresh observation is better than repeating intake once core symptom details are captured.",
-      rulesUsed: ["general_followup"],
-      eliminates: [],
-      narrowsTo: ["top_likely_components"]
-    }
-  };
+  assistant: "",
+  input: { type: "none", key: "", choices: [] },
+  questionMeta: {
+    goal: "hold",
+    reason: "No generic fallback question should be asked once the core symptom is captured.",
+    rulesUsed: ["no_generic_details_fallback"],
+    eliminates: [],
+    narrowsTo: ["top_likely_components"]
+  }
+};
 }
 
 function isUsefulQuestion(turn) {
@@ -5285,6 +5305,261 @@ function normalizeTurnInput(turn) {
   }
 
   return input;
+}
+const EVIDENCE_QUESTION_BANK = {
+  sound_type: {
+    assistant: "What do you hear when the issue happens?",
+    input: {
+      type: "choice",
+      key: "soundType",
+      choices: ["no sound", "clicking", "hum or buzz", "grinding", "rattle", "not sure"]
+    }
+  },
+
+  timing: {
+    assistant: "When does the issue happen most?",
+    input: {
+      type: "choice",
+      key: "timing",
+      choices: ["always", "intermittent", "during startup", "during operation", "at the end of the cycle", "not sure"]
+    }
+  },
+
+  when_happens: {
+    assistant: "When does the issue happen most?",
+    input: {
+      type: "choice",
+      key: "whenHappens",
+      choices: ["always", "intermittent", "during startup", "during operation", "at the end of the cycle", "not sure"]
+    }
+  },
+
+  location: {
+    assistant: "Where is the issue most noticeable?",
+    input: {
+      type: "choice",
+      key: "location",
+      choices: ["front", "back", "inside", "underneath", "near the motor or pump area", "not sure"]
+    }
+  },
+
+  error_codes: {
+    assistant: "Are there any error codes, blinking lights, or warning indicators?",
+    input: {
+      type: "choice",
+      key: "errorCodes",
+      choices: ["yes", "no", "not sure"]
+    }
+  },
+
+  airflow_present: {
+    assistant: "When the unit is supposed to be running, do you feel air moving?",
+    input: {
+      type: "choice",
+      key: "airflowPresent",
+      choices: ["strong airflow", "weak airflow", "no airflow", "not sure"]
+    }
+  },
+
+  drum_moves_by_hand: {
+    assistant: "With power off, does the drum or moving part move freely by hand?",
+    input: {
+      type: "choice",
+      key: "drumMovesByHand",
+      choices: ["moves freely", "feels stiff", "feels stuck", "not sure"]
+    }
+  },
+
+  drum_spin_status: {
+    assistant: "When the unit tries to run, does the drum or moving part actually move?",
+    input: {
+      type: "choice",
+      key: "drumSpinStatus",
+      choices: ["moves normally", "tries to move but stops", "does not move", "hums but does not move", "not sure"]
+    }
+  },
+
+  door_switch_held_effect: {
+    assistant: "When the door or latch switch is held closed, what changes?",
+    input: {
+      type: "choice",
+      key: "doorSwitchHeldEffect",
+      choices: ["nothing changes", "it tries to run", "a heater or motor comes on", "not sure"]
+    }
+  },
+
+  door_switch_response: {
+    assistant: "When you press the door or latch switch, does it click or respond?",
+    input: {
+      type: "choice",
+      key: "doorSwitchResponse",
+      choices: ["clear click or response", "no click or response", "loose or inconsistent", "not sure"]
+    }
+  },
+
+  leak_location: {
+    assistant: "Where do you see the water or leak?",
+    input: {
+      type: "choice",
+      key: "leakLocation",
+      choices: ["front", "back", "underneath", "inside the unit", "near a hose or connection", "not sure"]
+    }
+  },
+
+  frost_buildup: {
+    assistant: "Do you see frost, ice buildup, or blockage near the problem area?",
+    input: {
+      type: "choice",
+      key: "frostBuildup",
+      choices: ["yes", "no", "not sure"]
+    }
+  },
+
+  compressor_running: {
+    assistant: "When the unit should be running, do you hear or feel the compressor running?",
+    input: {
+      type: "choice",
+      key: "compressorRunning",
+      choices: ["yes", "no", "starts then stops", "not sure"]
+    }
+  },
+
+  fan_spins_by_hand: {
+    assistant: "With power off, does the fan or moving part spin freely by hand?",
+    input: {
+      type: "choice",
+      key: "fanSpinsByHand",
+      choices: ["spins freely", "feels stiff", "does not move", "not sure"]
+    }
+  }
+};
+
+function buildEvidenceQuestionForKey(session, rawKey, meta = {}) {
+  const key = normalizeEvidenceKey(rawKey);
+  const bankItem = EVIDENCE_QUESTION_BANK[key];
+
+  if (!bankItem) return null;
+
+  const normalizedInput = normalizeTurnInput({ input: bankItem.input });
+  const intentKey = normalizedInput?.key || key;
+
+  if (hasMeaningfulAnswerByIntent(session, intentKey)) return null;
+  if (alreadyAskedQuestion(session, intentKey)) return null;
+
+  return {
+    assistant: bankItem.assistant,
+    input: normalizedInput,
+    questionMeta: {
+      goal: "disambiguate",
+      reason:
+        meta.reason ||
+        "This asks for the most useful missing evidence instead of using a generic details prompt.",
+      rulesUsed: ["evidence_question_bank"],
+      eliminates: [],
+      narrowsTo: Array.isArray(meta.narrowsTo) ? meta.narrowsTo : []
+    }
+  };
+}
+
+function buildBestMissingEvidenceQuestion(session, lockDecision = {}) {
+  ensureReasoning(session);
+
+  const hypotheses = Array.isArray(session.diagnosis?.reasoning?.hypotheses)
+    ? session.diagnosis.reasoning.hypotheses
+    : [];
+
+  const candidates = Array.isArray(session.diagnosis?.reasoning?.ontologyCandidates)
+    ? session.diagnosis.reasoning.ontologyCandidates
+    : [];
+
+  const narrowsTo = hypotheses.slice(0, 3).map((h) => h.component).filter(Boolean);
+
+  const keys = [];
+
+  if (Array.isArray(lockDecision?.missingEvidence)) {
+    keys.push(...lockDecision.missingEvidence);
+  }
+
+  for (const h of hypotheses.slice(0, 3)) {
+    if (Array.isArray(h?.missingEvidence)) {
+      keys.push(...h.missingEvidence);
+    }
+  }
+
+  const rankedFromCandidates = deriveMissingEvidenceForCandidates(session, candidates);
+  for (const item of rankedFromCandidates) {
+    if (item?.key) keys.push(item.key);
+  }
+
+  const uniqueKeys = [...new Set(keys.map((k) => normalizeEvidenceKey(k)).filter(Boolean))];
+
+  for (const key of uniqueKeys) {
+    const question = buildEvidenceQuestionForKey(session, key, {
+      narrowsTo,
+      reason: `The diagnosis is missing ${key}, so this is the next best troubleshooting check.`
+    });
+
+    if (question) return question;
+  }
+
+  return null;
+}
+
+function canCautiouslyLockDiagnosis(session) {
+  ensureReasoning(session);
+
+  const dx = session.diagnosis || {};
+  const hypotheses = Array.isArray(dx.reasoning?.hypotheses) ? dx.reasoning.hypotheses : [];
+  const top = hypotheses[0] || null;
+  const lockDecision = dx.reasoning?.lockDecision || {};
+
+  if (!top?.component) return false;
+
+  const confidence = normalizeConfidence(dx.confidence || top.confidence || 0);
+  const missingEvidence = Array.isArray(lockDecision?.missingEvidence)
+    ? lockDecision.missingEvidence
+    : Array.isArray(top?.missingEvidence)
+      ? top.missingEvidence
+      : [];
+
+  const meaningfulEvidenceCount = Object.entries(summarizeEvidenceProfile(session)).filter(([, value]) => {
+    return value != null && value !== "" && value !== "not sure";
+  }).length;
+
+  const noUsefulMissingEvidence = missingEvidence.length === 0;
+  const enoughEvidence = meaningfulEvidenceCount >= 3;
+  const moderateConfidence = confidence >= 55;
+
+  return noUsefulMissingEvidence && enoughEvidence && moderateConfidence;
+}
+
+function lockDiagnosisForPartLookup(session) {
+  ensureReasoning(session);
+
+  const top = session.diagnosis?.reasoning?.hypotheses?.[0] || null;
+  const component =
+    session.diagnosis?.suggestedComponent ||
+    session.diagnosis?.component ||
+    top?.component ||
+    null;
+
+  if (!component) return false;
+
+  session.diagnosis.locked = true;
+  session.diagnosis.recommendedPath = "repair";
+  session.diagnosis.status = "complete";
+  session.diagnosis.stage = "locked";
+  session.diagnosis.component = component;
+  session.diagnosis.suggestedComponent = component;
+  session.diagnosis.proposedHypothesis = component;
+
+  session.partLookup = session.partLookup || {};
+  session.partLookup.applianceType = session.partLookup.applianceType || session.appliance || null;
+  session.partLookup.suspectedComponent = session.partLookup.suspectedComponent || component;
+
+  session.mode = "part_lookup";
+
+  return true;
 }
 
 /* =========================================================
@@ -7492,36 +7767,98 @@ const next = await chooseNextDiagnosticAction({ session });
 if (next?.question?.input?.type === "none") {
   const lockDecision = session.diagnosis?.reasoning?.lockDecision || {};
 
+  const smartMissingQuestion = buildBestMissingEvidenceQuestion(session, lockDecision);
+
+  if (smartMissingQuestion) {
+    const normalizedInput = normalizeTurnInput({ input: smartMissingQuestion.input });
+
+    setCurrentQuestion(session, normalizedInput);
+
+    if (normalizedInput.type !== "none" && normalizedInput.key) {
+      markQuestionAsked(session, normalizedInput.key);
+    }
+
+    pushDiagTurn(session, "assistant", smartMissingQuestion.assistant);
+
+    session.diagnosis.locked = false;
+    session.diagnosis.recommendedPath = "diagnose";
+    session.diagnosis.status = "running";
+    session.diagnosis.stage = "questions";
+    session.diagnosis.component =
+      session.diagnosis.suggestedComponent || session.diagnosis.component || null;
+
+    session.mode = "diagnose";
+
+    await req.saveFxSession();
+
+    const responseObj = buildSuccessResponse(session, {
+      type: "diagnose_turn",
+      nextAction: normalizedInput.type === "choice" ? "answers" : "diagnose",
+      diagnosis: buildDiagnosisResponse(session, false),
+      ui: {
+        assistantMessage: smartMissingQuestion.assistant,
+        input: normalizedInput,
+        questionMeta: smartMissingQuestion.questionMeta
+      },
+      data: {
+        lockDecision
+      }
+    });
+
+    await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
+    return res.status(200).json(responseObj);
+  }
+
+  if (canCautiouslyLockDiagnosis(session) && lockDiagnosisForPartLookup(session)) {
+    const dxPayload = buildDiagnosisResponse(session, true);
+
+    await req.saveFxSession();
+
+    const responseObj = buildSuccessResponse(session, {
+      type: "diagnose_locked",
+      nextAction: "part_lookup",
+      diagnosis: dxPayload,
+      ui: {
+        assistantMessage:
+          `${dxPayload.summaryForUser} I have enough evidence to move forward with a likely diagnosis. Next I need the model number so I can confirm the exact replacement part.`,
+        input: { type: "none", key: "", choices: [] }
+      },
+      data: {
+        reasoning: dxPayload.reasoning,
+        topHypotheses: dxPayload.topHypotheses,
+        lockDecision
+      }
+    });
+
+    await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
+    return res.status(200).json(responseObj);
+  }
+
   session.diagnosis.locked = false;
   session.diagnosis.recommendedPath = "diagnose";
-  session.diagnosis.status = "running";
+  session.diagnosis.status = "review";
   session.diagnosis.stage = "review";
-  session.diagnosis.component = session.diagnosis.suggestedComponent || session.diagnosis.component || null;
+  session.diagnosis.component =
+    session.diagnosis.suggestedComponent || session.diagnosis.component || null;
 
   session.mode = "diagnose";
 
-  setCurrentQuestion(session, {
-    type: "text",
-    key: "details",
-    choices: []
-  });
-
   await req.saveFxSession();
 
+  const dxPayload = buildDiagnosisResponse(session, false);
+
   const responseObj = buildSuccessResponse(session, {
-    type: "diagnose_turn",
-    nextAction: "diagnose",
-    diagnosis: buildDiagnosisResponse(session, false),
+    type: "diagnose_review",
+    nextAction: "review",
+    diagnosis: dxPayload,
     ui: {
       assistantMessage:
-        "I have narrowed this down, but I do not have enough evidence to recommend a part yet. Give me one more useful detail about what happens when the issue occurs.",
-      input: {
-        type: "text",
-        key: "details",
-        choices: []
-      }
+        "I do not want to keep asking repeated questions. I have a likely diagnosis, but confidence is still moderate. Review the reasoning, then either continue with part confirmation or troubleshoot another symptom.",
+      input: { type: "none", key: "", choices: [] }
     },
     data: {
+      reasoning: dxPayload.reasoning,
+      topHypotheses: dxPayload.topHypotheses,
       lockDecision
     }
   });
@@ -7529,6 +7866,7 @@ if (next?.question?.input?.type === "none") {
   await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
   return res.status(200).json(responseObj);
 }
+
 
 let question = next?.question || null;
 
