@@ -5529,7 +5529,7 @@ function canCautiouslyLockDiagnosis(session) {
   const hasClearTopComponent = !!top?.component;
   const noUsefulMissingEvidence = missingEvidence.length === 0;
   const enoughEvidence = meaningfulEvidenceCount >= 3;
-  const moderateConfidence = confidence >= 40;
+  const moderateConfidence = confidence >= 70;
 
   return (
     hasClearTopComponent &&
@@ -7773,49 +7773,86 @@ if (shouldLock) {
 const next = await chooseNextDiagnosticAction({ session });
 
 if (next?.question?.input?.type === "none") {
-  const lockDecision = session.diagnosis?.reasoning?.lockDecision || {};
+ const lockDecision = session.diagnosis?.reasoning?.lockDecision || {};
+const confidence = normalizeConfidence(session.diagnosis?.confidence || 0);
 
-  const smartMissingQuestion = buildBestMissingEvidenceQuestion(session, lockDecision);
+const smartMissingQuestion = buildBestMissingEvidenceQuestion(session, lockDecision);
 
-  if (smartMissingQuestion) {
-    const normalizedInput = normalizeTurnInput({ input: smartMissingQuestion.input });
+if (confidence < 70 && smartMissingQuestion) {
+  const normalizedInput = normalizeTurnInput({ input: smartMissingQuestion.input });
 
-    setCurrentQuestion(session, normalizedInput);
+  setCurrentQuestion(session, normalizedInput);
 
-    if (normalizedInput.type !== "none" && normalizedInput.key) {
-      markQuestionAsked(session, normalizedInput.key);
-    }
-
-    pushDiagTurn(session, "assistant", smartMissingQuestion.assistant);
-
-    session.diagnosis.locked = false;
-    session.diagnosis.recommendedPath = "diagnose";
-    session.diagnosis.status = "running";
-    session.diagnosis.stage = "questions";
-    session.diagnosis.component =
-      session.diagnosis.suggestedComponent || session.diagnosis.component || null;
-
-    session.mode = "diagnose";
-
-    await req.saveFxSession();
-
-    const responseObj = buildSuccessResponse(session, {
-      type: "diagnose_turn",
-      nextAction: normalizedInput.type === "choice" ? "answers" : "diagnose",
-      diagnosis: buildDiagnosisResponse(session, false),
-      ui: {
-        assistantMessage: smartMissingQuestion.assistant,
-        input: normalizedInput,
-        questionMeta: smartMissingQuestion.questionMeta
-      },
-      data: {
-        lockDecision
-      }
-    });
-
-    await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
-    return res.status(200).json(responseObj);
+  if (normalizedInput.type !== "none" && normalizedInput.key) {
+    markQuestionAsked(session, normalizedInput.key);
   }
+
+  if (smartMissingQuestion.assistant) {
+    pushDiagTurn(session, "assistant", smartMissingQuestion.assistant);
+  }
+
+  session.diagnosis.locked = false;
+  session.diagnosis.recommendedPath = "diagnose";
+  session.diagnosis.status = "running";
+  session.diagnosis.stage = "questions";
+  session.mode = "diagnose";
+
+  await req.saveFxSession();
+
+  const responseObj = buildSuccessResponse(session, {
+    type: "diagnose_turn",
+    nextAction:
+      normalizedInput.type === "choice"
+        ? "answers"
+        : normalizedInput.type === "none"
+          ? "message"
+          : "message",
+    diagnosis: buildDiagnosisResponse(session, false),
+    ui: {
+      assistantMessage: smartMissingQuestion.assistant,
+      input: normalizedInput,
+      questionMeta: smartMissingQuestion.questionMeta
+    },
+    data: {
+      lockDecision
+    }
+  });
+
+  await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
+  return res.status(200).json(responseObj);
+}
+
+session.diagnosis.locked = false;
+session.diagnosis.recommendedPath = "diagnose";
+session.diagnosis.status = "running";
+session.diagnosis.stage = "questions";
+session.mode = "diagnose";
+
+await req.saveFxSession();
+
+const responseObj = buildSuccessResponse(session, {
+  type: "diagnose_turn",
+  nextAction: "message",
+  diagnosis: buildDiagnosisResponse(session, false),
+  ui: {
+    assistantMessage:
+      "I still do not have enough evidence to recommend a part. Tell me one more specific thing you notice when the issue happens.",
+    input: { type: "text", key: "details", choices: [] },
+    questionMeta: {
+      goal: "disambiguate",
+      reason: "Confidence is too low to review or lock a diagnosis.",
+      rulesUsed: ["low_confidence_no_review_guard"],
+      eliminates: [],
+      narrowsTo: []
+    }
+  },
+  data: {
+    lockDecision
+  }
+});
+
+await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
+return res.status(200).json(responseObj);
 
   if (canCautiouslyLockDiagnosis(session) && lockDiagnosisForPartLookup(session)) {
     const dxPayload = buildDiagnosisResponse(session, true);
