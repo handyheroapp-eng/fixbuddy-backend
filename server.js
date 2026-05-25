@@ -5504,7 +5504,6 @@ function buildBestMissingEvidenceQuestion(session, lockDecision = {}) {
 
   return null;
 }
-
 function canCautiouslyLockDiagnosis(session) {
   ensureReasoning(session);
 
@@ -5526,12 +5525,20 @@ function canCautiouslyLockDiagnosis(session) {
     return value != null && value !== "" && value !== "not sure";
   }).length;
 
+  // Updated thresholds
+  const hasClearTopComponent = !!top?.component;
   const noUsefulMissingEvidence = missingEvidence.length === 0;
   const enoughEvidence = meaningfulEvidenceCount >= 3;
-  const moderateConfidence = confidence >= 55;
+  const moderateConfidence = confidence >= 40;
 
-  return noUsefulMissingEvidence && enoughEvidence && moderateConfidence;
+  return (
+    hasClearTopComponent &&
+    noUsefulMissingEvidence &&
+    enoughEvidence &&
+    moderateConfidence
+  );
 }
+
 
 function lockDiagnosisForPartLookup(session) {
   ensureReasoning(session);
@@ -7251,6 +7258,7 @@ app.post("/session/diagnose", requireSession, async (req, res) => {
       safetyGate: safetyGateInfo(session),
       statusSnapshot: buildStatusSnapshot(session)
     });
+    
   } catch (err) {
     console.error("diagnose error:", err);
     return res.status(500).json({ error: "Internal error", detail: err?.message || "unknown" });
@@ -7626,7 +7634,7 @@ app.post("/session/diagnose/next", requireSession, async (req, res) => {
       await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
       return res.status(200).json(responseObj);
     }
-
+    
     
 
     await extractEvidenceFromMessage({
@@ -7811,7 +7819,6 @@ if (next?.question?.input?.type === "none") {
 
   if (canCautiouslyLockDiagnosis(session) && lockDiagnosisForPartLookup(session)) {
     const dxPayload = buildDiagnosisResponse(session, true);
-
     await req.saveFxSession();
 
     const responseObj = buildSuccessResponse(session, {
@@ -7840,7 +7847,6 @@ if (next?.question?.input?.type === "none") {
   session.diagnosis.stage = "review";
   session.diagnosis.component =
     session.diagnosis.suggestedComponent || session.diagnosis.component || null;
-
   session.mode = "diagnose";
 
   await req.saveFxSession();
@@ -7866,7 +7872,6 @@ if (next?.question?.input?.type === "none") {
   await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
   return res.status(200).json(responseObj);
 }
-
 
 let question = next?.question || null;
 
@@ -7940,10 +7945,9 @@ if (!question) {
       }
     });
 
-    await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
+       await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
     return res.status(200).json(responseObj);
-  } 
-  catch (err) {
+  } catch (err) {
     console.error("diagnose/next error:", err);
     return res.status(500).json({ error: "Internal error", detail: err?.message || "unknown" });
   }
