@@ -2374,6 +2374,89 @@ function normalizeEvidenceKey(key) {
 function normalizeEvidenceValue(value) {
   const v = normalizeText(value).toLowerCase();
 
+  if (!v) return "";
+
+  if (
+    v.includes("won't start") ||
+    v.includes("wont start") ||
+    v.includes("doesn't start") ||
+    v.includes("doesnt start") ||
+    v.includes("does not start") ||
+    v.includes("not starting") ||
+    v.includes("nothing happens") ||
+    v.includes("press start")
+  ) {
+    return "does not start";
+  }
+
+  if (
+    v.includes("won't spin") ||
+    v.includes("wont spin") ||
+    v.includes("doesn't spin") ||
+    v.includes("doesnt spin") ||
+    v.includes("does not spin") ||
+    v.includes("not spinning") ||
+    v.includes("does not move") ||
+    v.includes("hums but does not move") ||
+    v.includes("hums but does not spin")
+  ) {
+    return "does not spin";
+  }
+
+  if (
+    v.includes("hum or buzz") ||
+    v.includes("low hum") ||
+    v.includes("low buzz") ||
+    v.includes("hums") ||
+    v.includes("buzzes") ||
+    v.includes("humming") ||
+    v.includes("buzzing")
+  ) {
+    return "hum or buzz";
+  }
+
+  if (
+    v.includes("moves freely") ||
+    v.includes("turns freely") ||
+    v.includes("spins freely") ||
+    v.includes("moves easy")
+  ) {
+    return "moves freely";
+  }
+
+  if (
+    v.includes("hard to turn") ||
+    v.includes("feels stuck") ||
+    v.includes("stiff") ||
+    v.includes("stuck")
+  ) {
+    return "feels stuck";
+  }
+
+  if (
+    v.includes("heater comes on") ||
+    v.includes("heater turns on") ||
+    v.includes("heating element turns on") ||
+    v.includes("heating element glows") ||
+    v.includes("glows orange") ||
+    v === "glows"
+  ) {
+    return "heater comes on";
+  }
+
+  if (
+    v.includes("drum tries") ||
+    v.includes("tries to move") ||
+    v.includes("tries to run")
+  ) {
+    return "drum tries to move";
+  }
+
+  if (v.includes("nothing changes")) return "nothing changes";
+  if (v.includes("no sound")) return "no sound";
+  if (v.includes("no error")) return "no";
+  if (v.includes("error code") || v.includes("blinking light")) return "yes";
+
   const map = {
     "back lower": "back bottom",
     "rear lower": "back bottom",
@@ -2389,55 +2472,9 @@ function normalizeEvidenceValue(value) {
     "while cooling": "during cooling",
     "all the time": "always",
     "constantly": "constant",
-    "stops when door opens": "yes",
-    "goes away when i open the door": "yes",
-    "does not stop when i open the door": "no",
-
-    "hum": "humming",
-    "buzz": "buzzing",
-    "grind": "grinding",
-    "squeak": "squeal",
-
     "dont know": "not sure",
     "don't know": "not sure",
-    "idk": "not sure",
-
-    "moves easy": "moves freely",
-    "moves freely by hand": "moves freely",
-    "turns freely": "moves freely",
-    "spins freely": "moves freely",
-    "hard to turn": "feels stuck",
-    "stiff": "feels stuck",
-    "stuck": "feels stuck",
-
-    "heater turns on": "heater comes on",
-    "heating element turns on": "heater comes on",
-    "heating element glows": "heater comes on",
-    "glows": "heater comes on",
-    "drum tries": "drum tries to move",
-
-    "no sound at all": "no sound",
-    "nothing happens": "does not start",
-    "wont start": "does not start",
-    "won't start": "does not start",
-    "doesnt start": "does not start",
-    "doesn't start": "does not start",
-
-    "doesnt spin": "does not spin",
-    "doesn't spin": "does not spin",
-    "wont spin": "does not spin",
-    "won't spin": "does not spin",
-
-    "hum or buzz": "hum or buzz",
-    "low hum": "hum or buzz",
-    "low buzz": "hum or buzz",
-    "hums": "hum or buzz",
-    "buzzes": "hum or buzz",
-    "humming": "hum or buzz",
-    "buzzing": "hum or buzz",
-
-    "it starts when pushed": "starts when pushed",
-    "starts if i push it": "starts when pushed"
+    "idk": "not sure"
   };
 
   return map[v] || v;
@@ -2896,7 +2933,10 @@ async function classifySymptomFamily({ session }) {
   const answersByIntent = session.diagnosis?.answersByIntent || {};
   const evidenceProfile = summarizeEvidenceProfile(session);
 
-  const combined = `${issueCategory} ${symptoms} ${userDescription}`.toLowerCase();
+  const evidenceText = Object.values(evidenceProfile || {}).join(" ");
+const answerText = Object.values(answersByIntent || {}).join(" ");
+
+const combined = `${appliance} ${issueCategory} ${symptoms} ${userDescription} ${evidenceText} ${answerText}`.toLowerCase();
 
   const ruleSignals = {
     noise: ["noise", "loud", "grinding", "buzzing", "clicking", "rattle", "squeal", "humming", "sound", "thump", "scraping"],
@@ -3349,9 +3389,11 @@ For dryer heat related cases, prefer airflow restriction and thermal protection 
       (x) => normalizeText(x.component).toLowerCase() === normalizeText(base.component).toLowerCase()
     );
 
-    const confidence = llm
-      ? clampNumber(Math.round((base.confidence * 0.45) + (normalizeConfidence(llm.confidence) * 0.55)), 0, 100)
-      : base.confidence;
+    const llmConfidence = llm ? normalizeConfidence(llm.confidence) : 0;
+
+const confidence = llm
+  ? clampNumber(Math.max(base.confidence, Math.round((base.confidence * 0.75) + (llmConfidence * 0.25))), 0, 100)
+  : base.confidence;
 
     return {
       component: base.component,
@@ -3361,9 +3403,9 @@ For dryer heat related cases, prefer airflow restriction and thermal protection 
       reason: llm?.reason || base.notes || "",
       support: base.support,
       contradictions: base.contradictions,
-      supportingEvidence: llm?.supportingEvidence?.length ? llm.supportingEvidence : base.supportingEvidence,
-      conflictingEvidence: llm?.conflictingEvidence?.length ? llm.conflictingEvidence : base.conflictingEvidence,
-      missingEvidence: llm?.missingEvidence?.length ? llm.missingEvidence : base.missingEvidence,
+      supportingEvidence: base.supportingEvidence?.length ? base.supportingEvidence : arr(llm?.supportingEvidence),
+conflictingEvidence: base.supportingEvidence?.length ? base.conflictingEvidence : arr(llm?.conflictingEvidence),
+missingEvidence: base.missingEvidence?.length ? base.missingEvidence : arr(llm?.missingEvidence),
       notes: llm?.reason || base.notes || ""
     };
   });
@@ -7817,28 +7859,6 @@ if (shouldLock) {
   session.diagnosis.proposedHypothesis =
     session.diagnosis.suggestedComponent || session.diagnosis.component || null;
 
-  const dxPayload = buildDiagnosisResponse(session, true);
-
-  await req.saveFxSession();
-
-  const responseObj = buildSuccessResponse(session, {
-    type: "diagnose_locked",
-    nextAction: "part_lookup",
-    diagnosis: dxPayload,
-    ui: {
-      assistantMessage:
-        `${dxPayload.summaryForUser} I reached this conclusion from the evidence collected so far. Before we move into repair, I need the model number so I can identify the correct replacement part.`,
-      input: { type: "none", key: "", choices: [] }
-    },
-    data: {
-      reasoning: dxPayload.reasoning,
-      topHypotheses: dxPayload.topHypotheses
-    }
-  });
-
-  await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
-  return res.status(200).json(responseObj);
-}
 
 const next = await chooseNextDiagnosticAction({ session });
 
@@ -7921,11 +7941,11 @@ const responseObj = buildSuccessResponse(session, {
   }
 });
 
-await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
-return res.status(200).json(responseObj);
+const cautionLockDecision = session.diagnosis?.reasoning?.lockDecision || {};
 
- if (canCautiouslyLockDiagnosis(session) && lockDiagnosisForPartLookup(session)) {
+if (canCautiouslyLockDiagnosis(session) && lockDiagnosisForPartLookup(session)) {
   const dxPayload = buildDiagnosisResponse(session, true);
+
   await req.saveFxSession();
 
   const responseObj = buildSuccessResponse(session, {
@@ -7940,9 +7960,18 @@ return res.status(200).json(responseObj);
     data: {
       reasoning: dxPayload.reasoning,
       topHypotheses: dxPayload.topHypotheses,
-      lockDecision
+      lockDecision: cautionLockDecision
     }
   });
+
+  await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
+  return res.status(200).json(responseObj);
+}
+await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
+return res.status(200).json(responseObj);
+
+
+ 
 
   await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
   return res.status(200).json(responseObj);
@@ -7983,6 +8012,7 @@ return res.status(200).json(responseObj);
 
 return res.status(200).json(lowConfidenceResponseObj);
 }
+const next = await chooseNextDiagnosticAction({ session });
 
 let question = next?.question || null;
 
