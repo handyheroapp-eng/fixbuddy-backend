@@ -2664,6 +2664,74 @@ function buildCandidateContrastMap(candidates) {
   return map;
 }
 
+function evidenceValueMatchesExpected(actualRaw, expectedRaw) {
+  const actual = normalizeEvidenceValue(String(actualRaw ?? "").toLowerCase());
+  const expected = normalizeEvidenceValue(String(expectedRaw ?? "").toLowerCase());
+
+  if (!actual || !expected) return false;
+  if (actual === expected) return true;
+  if (actual.includes(expected) || expected.includes(actual)) return true;
+
+  const positiveNoStart =
+    expected.includes("does not start") &&
+    (
+      actual.includes("does not start") ||
+      actual.includes("doesn't start") ||
+      actual.includes("doesnt start") ||
+      actual.includes("won't start") ||
+      actual.includes("wont start") ||
+      actual.includes("not starting") ||
+      actual.includes("nothing happens")
+    );
+
+  const humBuzz =
+    expected.includes("hum") || expected.includes("buzz");
+
+  const actualHumBuzz =
+    actual.includes("hum") || actual.includes("buzz");
+
+  const noSpin =
+    expected.includes("does not spin") &&
+    (
+      actual.includes("does not spin") ||
+      actual.includes("doesn't spin") ||
+      actual.includes("doesnt spin") ||
+      actual.includes("won't spin") ||
+      actual.includes("wont spin") ||
+      actual.includes("not spin") ||
+      actual.includes("does not move") ||
+      actual.includes("hums but does not move")
+    );
+
+  const freeDrum =
+    expected.includes("moves freely") &&
+    (
+      actual.includes("moves freely") ||
+      actual.includes("turns freely") ||
+      actual.includes("spins freely") ||
+      actual.includes("free")
+    );
+
+  const heaterComesOn =
+    expected.includes("heater comes on") &&
+    (
+      actual.includes("heater comes on") ||
+      actual.includes("heater turns on") ||
+      actual.includes("heating element") ||
+      actual.includes("glows")
+    );
+
+  const triesToMove =
+    expected.includes("drum tries to move") &&
+    (
+      actual.includes("tries to move") ||
+      actual.includes("tries to run") ||
+      actual.includes("it tries to run")
+    );
+
+  return positiveNoStart || (humBuzz && actualHumBuzz) || noSpin || freeDrum || heaterComesOn || triesToMove;
+}
+
 function scoreEvidenceSupportForCandidate(candidate, evidenceProfile) {
   const patterns = candidate?.evidencePatterns || {};
   const keys = Object.keys(patterns);
@@ -2682,7 +2750,9 @@ function scoreEvidenceSupportForCandidate(candidate, evidenceProfile) {
       continue;
     }
 
-    if (expected.includes(actual)) {
+    const matched = expected.some((x) => evidenceValueMatchesExpected(actual, x));
+
+    if (matched) {
       support += 1;
       supportingEvidence.push(`${key}:${actual}`);
     } else {
@@ -7854,30 +7924,29 @@ const responseObj = buildSuccessResponse(session, {
 await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
 return res.status(200).json(responseObj);
 
-  if (canCautiouslyLockDiagnosis(session) && lockDiagnosisForPartLookup(session)) {
-    const dxPayload = buildDiagnosisResponse(session, true);
-    await req.saveFxSession();
+ if (canCautiouslyLockDiagnosis(session) && lockDiagnosisForPartLookup(session)) {
+  const dxPayload = buildDiagnosisResponse(session, true);
+  await req.saveFxSession();
 
-    const responseObj = buildSuccessResponse(session, {
-      type: "diagnose_locked",
-      nextAction: "part_lookup",
-      diagnosis: dxPayload,
-      ui: {
-        assistantMessage:
-          `${dxPayload.summaryForUser} I have enough evidence to move forward with a likely diagnosis. Next I need the model number so I can confirm the exact replacement part.`,
-        input: { type: "none", key: "", choices: [] }
-      },
-      data: {
-        reasoning: dxPayload.reasoning,
-        topHypotheses: dxPayload.topHypotheses,
-        lockDecision
-      }
-    });
+  const responseObj = buildSuccessResponse(session, {
+    type: "diagnose_locked",
+    nextAction: "part_lookup",
+    diagnosis: dxPayload,
+    ui: {
+      assistantMessage:
+        `${dxPayload.summaryForUser} I have enough evidence to move forward with a likely diagnosis. Next I need the model number so I can confirm the exact replacement part.`,
+      input: { type: "none", key: "", choices: [] }
+    },
+    data: {
+      reasoning: dxPayload.reasoning,
+      topHypotheses: dxPayload.topHypotheses,
+      lockDecision
+    }
+  });
 
-    await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
-    return res.status(200).json(responseObj);
-  }
-
+  await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
+  return res.status(200).json(responseObj);
+}
   session.diagnosis.locked = false;
   session.diagnosis.recommendedPath = "diagnose";
   session.diagnosis.status = "review";
