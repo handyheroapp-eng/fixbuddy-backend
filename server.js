@@ -7890,7 +7890,7 @@ return res.status(200).json(responseObj);
 
   const dxPayload = buildDiagnosisResponse(session, false);
 
-  const responseObj = buildSuccessResponse(session, {
+  const lowConfidenceResponseObj = buildSuccessResponse(session, {
     type: "diagnose_review",
     nextAction: "review",
     diagnosis: dxPayload,
@@ -7906,8 +7906,13 @@ return res.status(200).json(responseObj);
     }
   });
 
-  await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
-  return res.status(200).json(responseObj);
+  await sessionStore.setIdempotency(
+  session.sessionId,
+  actionId,
+  lowConfidenceResponseObj
+);
+
+return res.status(200).json(lowConfidenceResponseObj);
 }
 
 let question = next?.question || null;
