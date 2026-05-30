@@ -2938,6 +2938,28 @@ const answerText = Object.values(answersByIntent || {}).join(" ");
 
 const combined = `${appliance} ${issueCategory} ${symptoms} ${userDescription} ${evidenceText} ${answerText}`.toLowerCase();
 
+if (
+  appliance === "dryer" &&
+  (
+    combined.includes("won't start") ||
+    combined.includes("wont start") ||
+    combined.includes("doesn't start") ||
+    combined.includes("doesnt start") ||
+    combined.includes("does not start") ||
+    combined.includes("not starting") ||
+    combined.includes("nothing happens") ||
+    combined.includes("press start")
+  )
+) {
+  session.diagnosis.reasoning.symptomFamily = "no_start";
+  session.diagnosis.reasoning.symptomFamilyConfidence = 98;
+
+  return {
+    symptomFamily: "no_start",
+    confidence: 98,
+    source: "hard_rule"
+  };
+}
   const ruleSignals = {
     noise: ["noise", "loud", "grinding", "buzzing", "clicking", "rattle", "squeal", "humming", "sound", "thump", "scraping"],
     no_start: ["won't start", "wont start", "doesn't start", "doesnt start", "not starting", "press start", "no start", "does not start", "nothing happens"],
@@ -3424,6 +3446,64 @@ missingEvidence: base.missingEvidence?.length ? base.missingEvidence : arr(llm?.
   return hypotheses;
 }
 
+function allowedQuestionForSession(session, question) {
+  const appliance = normalizeApplianceType(session?.appliance);
+  const family = normalizeText(session?.diagnosis?.reasoning?.symptomFamily || "").toLowerCase();
+
+  const text = `${question?.assistant || ""} ${(question?.input?.choices || []).join(" ")}`.toLowerCase();
+
+  const fridgeOnlyTerms = [
+    "freezer",
+    "fridge",
+    "refrigerator",
+    "crisper",
+    "ice maker",
+    "back wall"
+  ];
+
+  const dryerOnlyTerms = [
+    "dryer",
+    "drum",
+    "lint",
+    "vent",
+    "heating element",
+    "door switch",
+    "press start"
+  ];
+
+  if (appliance === "dryer" && fridgeOnlyTerms.some((x) => text.includes(x))) {
+    return false;
+  }
+
+  if (appliance === "refrigerator" && dryerOnlyTerms.some((x) => text.includes(x))) {
+    return false;
+  }
+
+  if (appliance === "dryer" && family === "no_start") {
+    const allowedKeys = new Set([
+      "soundType",
+      "sound_type",
+      "drumMovesByHand",
+      "drum_moves_by_hand",
+      "doorSwitchHeldEffect",
+      "door_switch_held_effect",
+      "doorSwitchResponse",
+      "door_switch_response",
+      "drumSpinStatus",
+      "drum_spin_status",
+      "errorCodes",
+      "error_codes",
+      "symptomDetails",
+      "main_symptom",
+      "details"
+    ]);
+
+    const key = normalizeText(question?.input?.key || "");
+    if (key && !allowedKeys.has(key)) return false;
+  }
+
+  return true;
+}
 async function chooseNextDiagnosticAction({ session }) {
   ensureReasoning(session);
 
@@ -8020,7 +8100,7 @@ if (!question || !question.input || question.input.type === "none") {
   const scriptedQ = getScriptedNextQuestion(session);
 
   if (scriptedQ) {
-    question = {
+    const scriptedQuestion = {
       assistant: scriptedQ.prompt,
       input: {
         type: scriptedQ.type,
@@ -8028,15 +8108,35 @@ if (!question || !question.input || question.input.type === "none") {
         choices: scriptedQ.choices
       }
     };
+
+    if (allowedQuestionForSession(session, scriptedQuestion)) {
+      question = scriptedQuestion;
+    } else {
+      question = null;
+    }
   }
 }
-
 if (!question) {
   question = {
     assistant: "",
     input: { type: "none", key: "", choices: [] }
   };
 }
+if (!allowedQuestionForSession(session, question)) {
+  question = selectHighValueFallbackQuestion(session);
+
+  if (!allowedQuestionForSession(session, question)) {
+    question = {
+      assistant: "I need to reset the diagnostic path because the next question did not match this appliance. When you press Start, what happens?",
+      input: {
+        type: "choice",
+        key: "soundType",
+        choices: ["nothing happens", "click", "hum or buzz", "starts then stops", "not sure"]
+      }
+    };
+  }
+}
+
     const normalizedInput = normalizeTurnInput({ input: question.input });
 
     setCurrentQuestion(session, normalizedInput);
