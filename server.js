@@ -2343,9 +2343,15 @@ function normalizeEvidenceKey(key) {
     noiselocation: "location",
     symptomlocation: "location",
     soundtype: "sound_type",
+    dryerstartbehavior: "sound_type",
+    dryernostartbehavior: "sound_type",
+    startbehavior: "sound_type",
+    startresponse: "sound_type",
     noisetype: "sound_type",
     soundkind: "sound_type",
     errorcodes: "error_codes",
+    controllockstatus: "error_codes",
+    dryercontrollockstatus: "error_codes",
     indicatorlights: "error_codes",
     codesshown: "error_codes",
     codespresent: "error_codes",
@@ -2356,15 +2362,24 @@ function normalizeEvidenceKey(key) {
     doorlatchclick: "door_switch_response",
     drumspins: "drum_spin_status",
     drumspinstatus: "drum_spin_status",
+    dryerdrumattemptstomove: "drum_spin_status",
+    drumattemptstomove: "drum_spin_status",
     drumdoesspin: "drum_spin_status",
     drummovesbyhand: "drum_moves_by_hand",
+    dryerdrummovesbyhand: "drum_moves_by_hand",
     drumturnsbyhand: "drum_moves_by_hand",
     manualdrummovement: "drum_moves_by_hand",
     doorswitchheldeffect: "door_switch_held_effect",
+    dryerdoorswitchlighttest: "door_switch_held_effect",
+    doorswitchlighttest: "door_switch_held_effect",
     doorswitchchange: "door_switch_held_effect",
     manualdoorswitcheffect: "door_switch_held_effect",
     frostbuildup: "frost_buildup",
-    powerstate: "power_state"
+    powerstate: "power_state",
+    dryerpowersourcecheck: "power_state",
+    dryerdisplaystartresponse: "power_state",
+    displaystartresponse: "power_state",
+    powerdisplaystatus: "power_state"
   };
 
   const normalized = k.replace(/[\s_\-]/g, "");
@@ -3479,20 +3494,34 @@ function allowedQuestionForSession(session, question) {
     return false;
   }
 
-  if (appliance === "dryer" && family === "no_start") {
+    if (appliance === "dryer" && family === "no_start") {
     const allowedKeys = new Set([
       "soundType",
       "sound_type",
+      "dryerStartBehavior",
+      "dryer_start_behavior",
+      "dryerPowerSourceCheck",
+      "dryer_power_source_check",
+      "dryerDisplayStartResponse",
+      "dryer_display_start_response",
       "drumMovesByHand",
       "drum_moves_by_hand",
+      "dryerDrumMovesByHand",
+      "dryer_drum_moves_by_hand",
       "doorSwitchHeldEffect",
       "door_switch_held_effect",
+      "dryerDoorSwitchLightTest",
+      "dryer_door_switch_light_test",
       "doorSwitchResponse",
       "door_switch_response",
       "drumSpinStatus",
       "drum_spin_status",
+      "dryerDrumAttemptsToMove",
+      "dryer_drum_attempts_to_move",
       "errorCodes",
       "error_codes",
+      "controlLockStatus",
+      "control_lock_status",
       "symptomDetails",
       "main_symptom",
       "details"
@@ -4708,6 +4737,14 @@ function normalizeQuestionIntent(key) {
     sound_type: [
       "sound_type",
       "soundtype",
+      "dryer_start_behavior",
+      "dryerstartbehavior",
+      "dryer_no_start_behavior",
+      "dryernostartbehavior",
+      "start_behavior",
+      "startbehavior",
+      "start_response",
+      "startresponse",
       "noise_type",
       "noisetype",
       "noise_kind",
@@ -4727,6 +4764,10 @@ function normalizeQuestionIntent(key) {
     error_codes: [
       "error_codes",
       "errorcodes",
+      "control_lock_status",
+      "controllockstatus",
+      "dryer_control_lock_status",
+      "dryercontrollockstatus",
       "error_code",
       "errorcode",
       "codes_shown",
@@ -4778,6 +4819,10 @@ function normalizeQuestionIntent(key) {
     drum_spin_status: [
       "drum_spin_status",
       "drumspinstatus",
+      "dryer_drum_attempts_to_move",
+      "dryerdrumattemptstomove",
+      "drum_attempts_to_move",
+      "drumattemptstomove",
       "drum_spins",
       "drumspins",
       "drum_does_spin",
@@ -4793,6 +4838,8 @@ function normalizeQuestionIntent(key) {
     drum_moves_by_hand: [
       "drum_moves_by_hand",
       "drummovesbyhand",
+      "dryer_drum_moves_by_hand",
+      "dryerdrummovesbyhand",
       "drum_turns_by_hand",
       "drumturnsbyhand",
       "manual_drum_movement",
@@ -4808,6 +4855,10 @@ function normalizeQuestionIntent(key) {
     door_switch_held_effect: [
       "door_switch_held_effect",
       "doorswitchheldeffect",
+      "dryer_door_switch_light_test",
+      "dryerdoorswitchlighttest",
+      "door_switch_light_test",
+      "doorswitchlighttest",
       "door_switch_change",
       "doorswitchchange",
       "manual_door_switch_effect",
@@ -4956,6 +5007,14 @@ function normalizeQuestionIntent(key) {
     power_state: [
       "power_state",
       "powerstate",
+      "dryer_power_source_check",
+      "dryerpowersourcecheck",
+      "dryer_display_start_response",
+      "dryerdisplaystartresponse",
+      "display_start_response",
+      "displaystartresponse",
+      "power_display_status",
+      "powerdisplaystatus",
       "on_off_state",
       "onoffstate",
       "plugged_in_state",
@@ -5338,6 +5397,9 @@ function selectHighValueFallbackQuestion(session) {
   }
 
   if (a === "dryer") {
+    const noStartFallback = buildDryerNoStartFallbackQuestion(session);
+    if (noStartFallback) return noStartFallback;
+
     if (!hasMeaningfulAnswerByIntent(session, "drumMovesByHand")) {
       return {
         assistant: "With the dryer unplugged, can you turn the drum by hand, and does it move freely or feel stuck?",
@@ -5502,6 +5564,33 @@ function normalizeTurnInput(turn) {
   return input;
 }
 const EVIDENCE_QUESTION_BANK = {
+  dryer_power_source_check: {
+    assistant: "When you press Start, do the display or lights come on normally?",
+    input: {
+      type: "choice",
+      key: "dryerPowerSourceCheck",
+      choices: ["display is normal", "no lights or display", "lights on but Start does nothing", "breaker or outlet issue", "not sure"]
+    }
+  },
+
+  dryer_door_switch_light_test: {
+    assistant: "When you open and close the dryer door, does the drum light or door switch seem to respond?",
+    input: {
+      type: "choice",
+      key: "dryerDoorSwitchLightTest",
+      choices: ["light turns on and off", "light stays off", "light stays on", "door switch feels loose", "not sure"]
+    }
+  },
+
+  dryer_drum_attempts_to_move: {
+    assistant: "When you press Start, does the drum try to move at all?",
+    input: {
+      type: "choice",
+      key: "dryerDrumAttemptsToMove",
+      choices: ["tries to move", "does not move at all", "hums but does not move", "starts then stops", "not sure"]
+    }
+  },
+
   sound_type: {
     assistant: "What do you hear when the issue happens?",
     input: {
@@ -5539,11 +5628,11 @@ const EVIDENCE_QUESTION_BANK = {
   },
 
   error_codes: {
-    assistant: "Are there any error codes, blinking lights, or warning indicators?",
+    assistant: "Do you see any error code, blinking light, or control lock indicator?",
     input: {
       type: "choice",
       key: "errorCodes",
-      choices: ["yes", "no", "not sure"]
+      choices: ["error code showing", "control lock is on", "blinking lights", "no code or lock", "not sure"]
     }
   },
 
@@ -5630,7 +5719,8 @@ const EVIDENCE_QUESTION_BANK = {
 };
 
 function buildEvidenceQuestionForKey(session, rawKey, meta = {}) {
-  const key = normalizeEvidenceKey(rawKey);
+  const raw = normalizeText(rawKey).toLowerCase();
+  const key = EVIDENCE_QUESTION_BANK[raw] ? raw : normalizeEvidenceKey(rawKey);
   const bankItem = EVIDENCE_QUESTION_BANK[key];
 
   if (!bankItem) return null;
@@ -5654,6 +5744,84 @@ function buildEvidenceQuestionForKey(session, rawKey, meta = {}) {
       narrowsTo: Array.isArray(meta.narrowsTo) ? meta.narrowsTo : []
     }
   };
+}
+
+function buildDryerNoStartFallbackQuestion(session) {
+  if (normalizeApplianceType(session?.appliance) !== "dryer") return null;
+  const family = normalizeText(session?.diagnosis?.reasoning?.symptomFamily || "").toLowerCase();
+  const description = normalizeText(session?.diagnosis?.userDescription || "").toLowerCase();
+  const looksNoStart =
+    family === "no_start" ||
+    description.includes("doesn't start") ||
+    description.includes("does not start") ||
+    description.includes("wont start") ||
+    description.includes("won't start") ||
+    description.includes("not start");
+
+  if (!looksNoStart) return null;
+
+  const startBehavior = {
+    assistant: "When you press Start, what happens?",
+    input: {
+      type: "choice",
+      key: "dryerStartBehavior",
+      choices: ["nothing happens", "click", "hum or buzz", "starts then stops", "not sure"]
+    },
+    questionMeta: {
+      goal: "disambiguate",
+      reason: "Start behavior is the first dryer no-start split.",
+      rulesUsed: ["dryer_no_start_fallback_chain"],
+      eliminates: [],
+      narrowsTo: ["power path", "door switch", "drive motor", "control path"]
+    }
+  };
+
+  const chain = [
+    startBehavior,
+    buildEvidenceQuestionForKey(session, "dryer_power_source_check", {
+      reason: "Power and display status is the next dryer no-start check.",
+      narrowsTo: ["power supply", "control board", "door switch"]
+    }),
+    buildEvidenceQuestionForKey(session, "dryer_door_switch_light_test", {
+      reason: "Door switch or light behavior helps separate the safety switch path.",
+      narrowsTo: ["door switch", "control path", "power path"]
+    }),
+    buildEvidenceQuestionForKey(session, "drum_moves_by_hand", {
+      reason: "Hand-turning the drum separates a stuck drum from a motor or belt path issue.",
+      narrowsTo: ["drive motor", "belt path", "idler or drum jam"]
+    }),
+    buildEvidenceQuestionForKey(session, "dryer_drum_attempts_to_move", {
+      reason: "Drum movement attempt helps separate motor start failure from control or switch failure.",
+      narrowsTo: ["drive motor", "belt path", "control path"]
+    }),
+    buildEvidenceQuestionForKey(session, "error_codes", {
+      reason: "Error codes or control lock status can explain a no-start condition without replacing parts.",
+      narrowsTo: ["control lock", "control board", "power path"]
+    })
+  ];
+
+  for (const item of chain) {
+    if (!item) continue;
+    const input = normalizeTurnInput({ input: item.input });
+    const key = input?.key || "";
+    if (!key) continue;
+    if (hasMeaningfulAnswerByIntent(session, key)) continue;
+    if (alreadyAskedQuestion(session, key)) continue;
+
+    return {
+      assistant: item.assistant,
+      input,
+      questionMeta: item.questionMeta || {
+        goal: "disambiguate",
+        reason: "Next unanswered dryer no-start fallback question.",
+        rulesUsed: ["dryer_no_start_fallback_chain"],
+        eliminates: [],
+        narrowsTo: []
+      }
+    };
+  }
+
+  return null;
 }
 
 function buildBestMissingEvidenceQuestion(session, lockDecision = {}) {
@@ -8012,21 +8180,20 @@ if (!question || !question.input || question.input.type === "none") {
 }
 
 if (!question || !allowedQuestionForSession(session, question)) {
-  question = {
-    assistant: "I need one final specific observation before I can recommend a part. When you try to start it, what happens?",
-    input: {
-      type: "choice",
-      key: "soundType",
-      choices: ["nothing happens", "click", "hum or buzz", "starts then stops", "not sure"]
-    },
-    questionMeta: {
-      goal: "disambiguate",
-      reason: "The previous question did not match the current appliance or useful evidence path.",
-      rulesUsed: ["diagnosis_route_safety_fallback"],
-      eliminates: [],
-      narrowsTo: ["top_likely_components"]
-    }
-  };
+  question =
+    buildDryerNoStartFallbackQuestion(session) ||
+    selectHighValueFallbackQuestion(session) ||
+    {
+      assistant: "",
+      input: { type: "none", key: "", choices: [] },
+      questionMeta: {
+        goal: "stop_repeat_loop",
+        reason: "No useful unanswered diagnostic question remains.",
+        rulesUsed: ["diagnosis_route_no_repeat_guard"],
+        eliminates: [],
+        narrowsTo: ["top_likely_components"]
+      }
+    };
 }
 
     const normalizedInput = normalizeTurnInput({ input: question.input });
