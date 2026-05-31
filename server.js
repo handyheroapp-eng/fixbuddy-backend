@@ -4325,6 +4325,8 @@ Return only valid JSON:
 
 Rules:
 Generate a safe, practical repair plan for the specific appliance and component.
+Write for a first-time DIY user who does not know internal appliance part names.
+When you name an internal part, immediately describe where it usually is or what it looks like.
 Use 5 to 8 steps when possible.
 The first step must be a safety and preparation step with powerRequired set to "off".
 Any disassembly, wiring, connector, panel removal, or component removal step must have powerRequired set to "off".
@@ -4344,6 +4346,7 @@ Each step must have:
 
 Field rules:
 - instructions must be direct action steps only.
+- instructions must avoid unexplained jargon such as "idler path" or "belt switch"; say what the user should look for in plain language.
 - whyItMatters must explain the purpose of the step in plain language.
 - safetyWarning must explain the specific safety risk for that step.
 - If there is no unique warning, safetyWarning should say "Keep power off and avoid forcing parts."
@@ -6712,7 +6715,7 @@ function buildPartLookupQuestions(session) {
   if (!hasModel) {
     questions.push({
       key: "modelNumber",
-      prompt: "What is the exact model number from the rating label? Example: LFXS26973S",
+      prompt: "Find the model number on the appliance sticker. It is usually on the door frame, inside lip, back panel, or under the lid. Type the full model number exactly as shown, or say cannot find.",
       required: true
     });
     return questions;
@@ -6724,7 +6727,7 @@ function buildPartLookupQuestions(session) {
 
   questions.push({
     key: "serialNumber",
-    prompt: "What is the serial number from the same label? Optional but useful for revision specific parts.",
+    prompt: "Optional: type the serial number from the same sticker. This can help when the same model has different part revisions. You can also say skip.",
     required: false
   });
 
@@ -6743,6 +6746,48 @@ function buildPartLookupQuestions(session) {
   }
 
   return questions;
+}
+
+function explainComponentForBeginner(component) {
+  const c = normalizeText(component).toLowerCase();
+
+  if (c.includes("belt") || c.includes("idler")) {
+    return {
+      label: "belt drive area",
+      description:
+        "This means the belt path that turns the drum: the long rubber belt around the drum, the small idler pulley that keeps the belt tight, and any belt safety switch nearby.",
+      plainInspection:
+        "You are looking for a broken or slipped belt, a pulley that is loose or stuck, or a small switch that is not being pressed by the belt path."
+    };
+  }
+
+  if (c.includes("motor")) {
+    return {
+      label: "drive motor",
+      description:
+        "This is the electric motor that turns the belt or moving parts. It is usually low in the cabinet and has wires connected to it.",
+      plainInspection:
+        "You are looking for a motor that hums but does not turn, smells hot, has damaged wiring, or will not spin the drive system."
+    };
+  }
+
+  if (c.includes("blower")) {
+    return {
+      label: "blower wheel",
+      description:
+        "This is the fan wheel that pushes air through the dryer. It is usually behind a cover near the front or lower housing.",
+      plainInspection:
+        "You are looking for a wheel that is cracked, loose on the shaft, blocked by lint, or rubbing the housing."
+    };
+  }
+
+  return {
+    label: component || "replacement part",
+    description:
+      "This is the area most likely connected to the symptom. The repair guide should help you identify it before removing anything.",
+    plainInspection:
+      "Move slowly, compare what you see to the expected result, and stop if the part location is not clear."
+  };
 }
 
 const partResolveCache = new Map();
@@ -6799,9 +6844,13 @@ function buildRepairPrep(session, template = {}) {
     "replacement part";
 
   const tools = Array.isArray(template.tools) ? template.tools : [];
+  const beginner = explainComponentForBeginner(component);
 
   return {
     component,
+    plainLanguageComponent: beginner.label,
+    componentDescription: beginner.description,
+    whatYouAreLookingFor: beginner.plainInspection,
     partName: session.partLookup?.resolution?.partName || null,
     oemPartNumber: session.partLookup?.resolution?.oemPartNumber || null,
     modelNumber: session.partLookup?.modelNumber || null,
@@ -6813,6 +6862,7 @@ function buildRepairPrep(session, template = {}) {
     skillLevel: "DIY comfortable with basic hand tools",
     commonMistakes: [
       "Starting before power is off",
+      "Continuing when you are not sure which part you are looking at",
       "Forgetting to photograph wiring before disconnecting",
       "Ordering a part before confirming the model number"
     ],
@@ -8197,10 +8247,13 @@ app.post("/session/part-resolve", requireSession, requirePartLookupReady, async 
     const suspectedComponent = pl.suspectedComponent || "unknown_component";
     const partLabelNumber = pl.componentIdentifiers?.partLabelNumber || "not provided";
 
-    const systemPrompt = `
+const systemPrompt = `
 You are FixBuddy Part Resolver.
 Goal: Suggest the most likely OEM part number and name for the suspected component for the given appliance model.
 Be conservative. Part numbers vary by revision.
+If the suspected component is a broad area, path, or multiple possible parts, explain that the exact orderable part still needs visual confirmation.
+Only provide an OEM part number when you are confident it is a real orderable OEM part for the exact model.
+If you cannot confirm an exact OEM part number, leave "oem_part_number" empty, set confidence to "Low", and put clear next verification steps in "verification_steps".
 Respond ONLY with valid JSON.
 
 Return format:
@@ -8250,8 +8303,8 @@ Task: Provide the most likely OEM part and how to verify it.
     }
 
     const resolved = {
-      status: "resolved",
-      locked: true,
+      status: str(parsed.oem_part_number) ? "resolved" : "needs_verification",
+      locked: !!str(parsed.oem_part_number),
       resolvedAt: new Date().toISOString(),
       partName: str(parsed.part_name),
       oemPartNumber: str(parsed.oem_part_number),
@@ -8261,33 +8314,38 @@ Task: Provide the most likely OEM part and how to verify it.
       verificationSteps: arr(parsed.verification_steps),
       notes: arr(parsed.notes),
       inputsUsed,
-      replacementReady: true,
+      replacementReady: !!str(parsed.oem_part_number),
       safetyPrereqs: needsOff
         ? ["Unplug the appliance before any disassembly."]
         : ["Follow safety guidance before disassembly."],
-      nextStep: "phase3_repair_start"
+      nextStep: str(parsed.oem_part_number) ? "phase3_repair_start" : "verify_exact_part_before_repair"
     };
 
     pl.resolution = resolved;
-    pl.status = "resolved";
+    pl.status = resolved.replacementReady ? "resolved" : "needs_verification";
     await req.saveFxSession();
 
     cacheSet(cacheKey, resolved);
 
     const partNameText = resolved.partName || "replacement part";
-const partNumberText = resolved.oemPartNumber || "not available";
+const partNumberText = resolved.oemPartNumber || "";
 
-const assistantMessage = `
-Most likely failed part: ${partNameText}
+const assistantMessage = partNumberText
+  ? `
+Exact part found: ${partNameText}
 OEM part number: ${partNumberText}
 
-What to do next:
-1. Search this OEM part number online (Amazon, RepairClinic, AppliancePartsPros)
-2. Match it to your exact model number before ordering
-3. Order the part if it matches your appliance
-4. Return here and follow the step-by-step repair guide
+Before ordering:
+1. Match this OEM number to your exact model number.
+2. Compare photos and connector shape with the part in your appliance.
+3. If the photos do not match, do not order it yet.
+`.trim()
+  : `
+I could not safely confirm one exact OEM part number from the model number alone.
 
-If the part number does not match your model, use the search queries provided to find the correct one.
+Likely area: ${partNameText}
+
+Before ordering, visually confirm which part failed. Use the verification steps below, or search using the suggested queries. Do not start the repair until the exact orderable part number is confirmed.
 `.trim();
 
 return res.json({
