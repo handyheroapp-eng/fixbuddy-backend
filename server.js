@@ -7914,118 +7914,12 @@ if (gate1.blockRepair) {
   await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
   return res.status(409).json(responseObj);
 }
-
 const shouldLock = evaluateLockReadiness(session);
 
-if (shouldLock) {
-  session.diagnosis.locked = true;
-  session.diagnosis.recommendedPath = "repair";
-  session.diagnosis.status = "complete";
-  session.diagnosis.stage = "locked";
-  session.diagnosis.component =
-    session.diagnosis.suggestedComponent || session.diagnosis.component || null;
+if (shouldLock || canCautiouslyLockDiagnosis(session)) {
+  lockDiagnosisForPartLookup(session);
 
-  session.partLookup = session.partLookup || {};
-  session.partLookup.applianceType =
-    session.partLookup.applianceType || session.appliance || null;
-  session.partLookup.suspectedComponent =
-    session.partLookup.suspectedComponent ||
-    session.diagnosis.suggestedComponent ||
-    session.diagnosis.component ||
-    null;
-
-  session.mode = "part_lookup";
-
-  session.diagnosis.proposedHypothesis =
-    session.diagnosis.suggestedComponent || session.diagnosis.component || null;
-
-
-const next = await chooseNextDiagnosticAction({ session });
-
-if (next?.question?.input?.type === "none") {
- const lockDecision = session.diagnosis?.reasoning?.lockDecision || {};
-const confidence = normalizeConfidence(session.diagnosis?.confidence || 0);
-
-const smartMissingQuestion = buildBestMissingEvidenceQuestion(session, lockDecision);
-
-if (confidence < 70 && smartMissingQuestion) {
-  const normalizedInput = normalizeTurnInput({ input: smartMissingQuestion.input });
-
-  setCurrentQuestion(session, normalizedInput);
-
-  if (normalizedInput.type !== "none" && normalizedInput.key) {
-    markQuestionAsked(session, normalizedInput.key);
-  }
-
-  if (smartMissingQuestion.assistant) {
-    pushDiagTurn(session, "assistant", smartMissingQuestion.assistant);
-  }
-
-  session.diagnosis.locked = false;
-  session.diagnosis.recommendedPath = "diagnose";
-  session.diagnosis.status = "running";
-  session.diagnosis.stage = "questions";
-  session.mode = "diagnose";
-
-  await req.saveFxSession();
-
-  const responseObj = buildSuccessResponse(session, {
-    type: "diagnose_turn",
-    nextAction:
-      normalizedInput.type === "choice"
-        ? "answers"
-        : normalizedInput.type === "none"
-          ? "message"
-          : "message",
-    diagnosis: buildDiagnosisResponse(session, false),
-    ui: {
-      assistantMessage: smartMissingQuestion.assistant,
-      input: normalizedInput,
-      questionMeta: smartMissingQuestion.questionMeta
-    },
-    data: {
-      lockDecision
-    }
-  });
-
-  await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
-  return res.status(200).json(responseObj);
-}
-
-session.diagnosis.locked = false;
-session.diagnosis.recommendedPath = "diagnose";
-session.diagnosis.status = "running";
-session.diagnosis.stage = "questions";
-session.mode = "diagnose";
-
-await req.saveFxSession();
-
-const responseObj = buildSuccessResponse(session, {
-  type: "diagnose_turn",
-  nextAction: "message",
-  diagnosis: buildDiagnosisResponse(session, false),
-  ui: {
-    assistantMessage:
-      "I still do not have enough evidence to recommend a part. Tell me one more specific thing you notice when the issue happens.",
-    input: { type: "text", key: "details", choices: [] },
-    questionMeta: {
-      goal: "disambiguate",
-      reason: "Confidence is too low to review or lock a diagnosis.",
-      rulesUsed: ["low_confidence_no_review_guard"],
-      eliminates: [],
-      narrowsTo: []
-    }
-  },
-  data: {
-    lockDecision
-  }
-});
-
-const cautionLockDecision = session.diagnosis?.reasoning?.lockDecision || {};
-
-if (canCautiouslyLockDiagnosis(session) && lockDiagnosisForPartLookup(session)) {
   const dxPayload = buildDiagnosisResponse(session, true);
-
   await req.saveFxSession();
 
   const responseObj = buildSuccessResponse(session, {
@@ -8034,107 +7928,55 @@ if (canCautiouslyLockDiagnosis(session) && lockDiagnosisForPartLookup(session)) 
     diagnosis: dxPayload,
     ui: {
       assistantMessage:
-        `${dxPayload.summaryForUser} I have enough evidence to move forward with a likely diagnosis. Next I need the model number so I can confirm the exact replacement part.`,
+        `${dxPayload.summaryForUser} I have enough evidence to move forward. Next I need the model number so I can confirm the exact replacement part.`,
       input: { type: "none", key: "", choices: [] }
     },
     data: {
       reasoning: dxPayload.reasoning,
       topHypotheses: dxPayload.topHypotheses,
-      lockDecision: cautionLockDecision
+      lockDecision: session.diagnosis?.reasoning?.lockDecision || {}
     }
   });
 
   await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
   return res.status(200).json(responseObj);
 }
-await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
-return res.status(200).json(responseObj);
 
-
- 
-
-  await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
-  return res.status(200).json(responseObj);
-}
-  session.diagnosis.locked = false;
-  session.diagnosis.recommendedPath = "diagnose";
-  session.diagnosis.status = "review";
-  session.diagnosis.stage = "review";
-  session.diagnosis.component =
-    session.diagnosis.suggestedComponent || session.diagnosis.component || null;
-  session.mode = "diagnose";
-
-  await req.saveFxSession();
-
-  const dxPayload = buildDiagnosisResponse(session, false);
-
-  const lowConfidenceResponseObj = buildSuccessResponse(session, {
-    type: "diagnose_review",
-    nextAction: "review",
-    diagnosis: dxPayload,
-    ui: {
-      assistantMessage:
-        "I do not want to keep asking repeated questions. I have a likely diagnosis, but confidence is still moderate. Review the reasoning, then either continue with part confirmation or troubleshoot another symptom.",
-      input: { type: "none", key: "", choices: [] }
-    },
-    data: {
-      reasoning: dxPayload.reasoning,
-      topHypotheses: dxPayload.topHypotheses,
-      lockDecision
-    }
-  });
-
-  await sessionStore.setIdempotency(
-  session.sessionId,
-  actionId,
-  lowConfidenceResponseObj
-);
-
-return res.status(200).json(lowConfidenceResponseObj);
-}
 const next = await chooseNextDiagnosticAction({ session });
-
 let question = next?.question || null;
 
 if (!question || !question.input || question.input.type === "none") {
-  const scriptedQ = getScriptedNextQuestion(session);
+  const lockDecision = session.diagnosis?.reasoning?.lockDecision || {};
+  const confidence = normalizeConfidence(session.diagnosis?.confidence || 0);
+  const smartMissingQuestion = buildBestMissingEvidenceQuestion(session, lockDecision);
 
-  if (scriptedQ) {
-    const scriptedQuestion = {
-      assistant: scriptedQ.prompt,
-      input: {
-        type: scriptedQ.type,
-        key: scriptedQ.key,
-        choices: scriptedQ.choices
-      }
-    };
-
-    if (allowedQuestionForSession(session, scriptedQuestion)) {
-      question = scriptedQuestion;
-    } else {
-      question = null;
-    }
-  }
-}
-if (!question) {
-  question = {
-    assistant: "",
-    input: { type: "none", key: "", choices: [] }
-  };
-}
-if (!allowedQuestionForSession(session, question)) {
-  question = selectHighValueFallbackQuestion(session);
-
-  if (!allowedQuestionForSession(session, question)) {
+  if (confidence < 70 && smartMissingQuestion) {
     question = {
-      assistant: "I need to reset the diagnostic path because the next question did not match this appliance. When you press Start, what happens?",
-      input: {
-        type: "choice",
-        key: "soundType",
-        choices: ["nothing happens", "click", "hum or buzz", "starts then stops", "not sure"]
-      }
+      assistant: smartMissingQuestion.assistant,
+      input: smartMissingQuestion.input,
+      questionMeta: smartMissingQuestion.questionMeta
     };
+  } else {
+    question = selectHighValueFallbackQuestion(session);
   }
+}
+
+if (!question || !allowedQuestionForSession(session, question)) {
+  question = {
+    assistant: "I need one final specific observation before I can recommend a part. When you try to start it, what happens?",
+    input: {
+      type: "choice",
+      key: "soundType",
+      choices: ["nothing happens", "click", "hum or buzz", "starts then stops", "not sure"]
+    },
+    questionMeta: {
+      goal: "disambiguate",
+      reason: "The previous question did not match the current appliance or useful evidence path.",
+      rulesUsed: ["diagnosis_route_safety_fallback"],
+      eliminates: [],
+      narrowsTo: ["top_likely_components"]
+    }
+  };
 }
 
     const normalizedInput = normalizeTurnInput({ input: question.input });
@@ -8159,11 +8001,11 @@ if (!allowedQuestionForSession(session, question)) {
     const responseObj = buildSuccessResponse(session, {
       type: "diagnose_turn",
       nextAction:
-        normalizedInput.type === "choice"
-          ? "answers"
-          : normalizedInput.type === "none"
-            ? "done"
-            : "message",
+  normalizedInput.type === "choice"
+    ? "answers"
+    : normalizedInput.type === "none"
+      ? "message"
+      : "message",
       diagnosis: {
         locked: false,
         confidence: session.diagnosis.confidence,
