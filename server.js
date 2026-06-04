@@ -4359,7 +4359,8 @@ When you name an internal part, immediately describe where it usually is or what
 Use 5 to 8 steps when possible.
 The first step must be a safety and preparation step with powerRequired set to "off".
 Any disassembly, wiring, connector, panel removal, or component removal step must have powerRequired set to "off".
-Only the final live verification step may require powerRequired set to "on".
+Powered test steps may require powerRequired set to "on", but they must never ask the user to touch exposed wiring or internal components while powered.
+The app will add explicit plug-in and unplug transition steps around powered tests.
 
 Each step must have:
 - short stable id
@@ -4506,19 +4507,9 @@ Output rules:
     firstStep.title = "Safety and prep";
   }
 
-  const liveSteps = steps.filter((x) => x.powerRequired === "on");
-
-  if (liveSteps.length > 1) {
-    for (let i = 0; i < steps.length - 1; i += 1) {
-      steps[i].powerRequired = "off";
-    }
-
-    steps[steps.length - 1].powerRequired = "on";
-  }
-
   return { tools, steps };
 }
-function normalizeRepairSteps(steps) {
+function normalizeRepairSteps(steps, context = {}) {
   if (!Array.isArray(steps)) return [];
 
   const normalized = steps
@@ -4588,6 +4579,8 @@ function normalizeRepairSteps(steps) {
         id: safeId,
         title: safeTitle,
         powerRequired,
+        requiredPowerState: normalizeRepairRequiredPowerState(step, powerRequired),
+        powerTransition: normalizeRepairPowerTransition(step?.powerTransition),
         requiresConfirmKey: confirmKey,
         instructions,
         confirmPrompt,
@@ -4602,18 +4595,206 @@ function normalizeRepairSteps(steps) {
   if (!normalized.length) return [];
 
   normalized[0].powerRequired = "off";
+  normalized[0].requiredPowerState = "unplugged";
 
-  const liveSteps = normalized.filter((x) => x.powerRequired === "on");
+  return insertPowerTransitionSteps(normalized, context);
+}
 
-  if (liveSteps.length > 1) {
-    for (let i = 0; i < normalized.length - 1; i += 1) {
-      normalized[i].powerRequired = "off";
-    }
+function normalizeRepairRequiredPowerState(step, fallbackPowerRequired = "") {
+  const raw = normalizeText(step?.requiredPowerState).toLowerCase();
 
-    normalized[normalized.length - 1].powerRequired = "on";
+  if (raw === "plugged_in" || raw === "plugged in" || raw === "on") {
+    return "plugged_in";
   }
 
-  return normalized;
+  if (raw === "unplugged" || raw === "off") {
+    return "unplugged";
+  }
+
+  if (raw === "unknown") {
+    return "unknown";
+  }
+
+  return fallbackPowerRequired === "on" ? "plugged_in" : "unplugged";
+}
+
+function normalizeRepairPowerTransition(value) {
+  const raw = normalizeText(value).toLowerCase();
+
+  if (
+    raw === "unplug" ||
+    raw === "plug_in_for_test" ||
+    raw === "unplug_after_test"
+  ) {
+    return raw;
+  }
+
+  return "none";
+}
+
+function repairStepText(step) {
+  return [
+    step?.title,
+    ...(Array.isArray(step?.instructions) ? step.instructions : []),
+    step?.safetyWarning,
+    step?.confirmPrompt
+  ]
+    .map((x) => normalizeText(x).toLowerCase())
+    .filter(Boolean)
+    .join(" ");
+}
+
+function isExplicitUnplugStep(step) {
+  const text = repairStepText(step);
+  const confirmKey = normalizeText(step?.requiresConfirmKey).toLowerCase();
+  return /unplug|power off|turn power off|breaker off/.test(text) && /unplug|power|off/.test(confirmKey);
+}
+
+function makePowerTransitionStep(kind, applianceLabel, index) {
+  const appliance = normalizeText(applianceLabel) || "appliance";
+
+  if (kind === "plug_in_for_test") {
+    return {
+      id: `power_transition_plug_in_for_test_${index}`,
+      title: "Plug in only for this test",
+      powerRequired: "on",
+      requiredPowerState: "plugged_in",
+      powerTransition: "plug_in_for_test",
+      requiresConfirmKey: `confirm_power_restored_for_test_${index}`,
+      confirmPrompt: `Confirm the ${appliance} is plugged in only for this powered test and you are standing clear.`,
+      instructions: [
+        `Plug the ${appliance} back in only for this test.`,
+        "Keep hands, tools, clothing, and loose items clear of moving parts.",
+        "Do not touch exposed wiring or internal components while power is on."
+      ],
+      whyItMatters: "Some checks require power, but the powered part of the repair must be brief and controlled.",
+      safetyWarning: "Power is on for this step. Do not touch exposed wiring, connectors, or internal components.",
+      expectedResult: "The appliance has power only for the test and you are not touching internal parts.",
+      ifNot: "If you cannot power it safely or see exposed wiring, stop and call a professional."
+    };
+  }
+
+  if (kind === "unplug_after_test") {
+    return {
+      id: `power_transition_unplug_after_test_${index}`,
+      title: "Unplug again before continuing",
+      powerRequired: "off",
+      requiredPowerState: "unplugged",
+      powerTransition: "unplug_after_test",
+      requiresConfirmKey: `confirm_unplugged_after_test_${index}`,
+      confirmPrompt: `Confirm the ${appliance} is unplugged again before touching or opening anything.`,
+      instructions: [
+        `Unplug the ${appliance} again before continuing.`,
+        "Wait for moving parts to fully stop.",
+        "Do not touch internal parts until power is off."
+      ],
+      whyItMatters: "This returns the repair to a safe power-off state before any hands-on work.",
+      safetyWarning: "Never touch wiring, connectors, or internal components while the appliance is plugged in.",
+      expectedResult: "The appliance is unplugged and safe to continue with hands-on work.",
+      ifNot: "If you cannot confirm power is off, stop and do not continue."
+    };
+  }
+
+  return {
+    id: `power_transition_unplug_${index}`,
+    title: "Unplug before you begin",
+    powerRequired: "off",
+    requiredPowerState: "unplugged",
+    powerTransition: "unplug",
+    requiresConfirmKey: `confirm_unplugged_${index}`,
+    confirmPrompt: `Confirm the ${appliance} is unplugged before continuing.`,
+    instructions: [
+      `Unplug the ${appliance} from the wall or turn off its breaker.`,
+      "Confirm the controls are off and the appliance cannot start.",
+      "Do not open panels or touch internal parts until power is off."
+    ],
+    whyItMatters: "Most repair steps require the appliance to be fully powered off before you touch anything inside.",
+    safetyWarning: "Do not touch exposed wiring, connectors, or internal components while the appliance is plugged in.",
+    expectedResult: "The appliance is unplugged or the breaker is off.",
+    ifNot: "If you cannot safely disconnect power, stop and call a professional."
+  };
+}
+
+function hardenPoweredRepairStep(step) {
+  const warning = "Power is on for this test. Keep hands, tools, clothing, and loose items clear. Do not touch exposed wiring or internal components.";
+
+  return {
+    ...step,
+    powerRequired: "on",
+    requiredPowerState: "plugged_in",
+    safetyWarning: normalizeText(step.safetyWarning)
+      ? `${step.safetyWarning} ${warning}`
+      : warning
+  };
+}
+
+function hardenUnknownRepairStep(step) {
+  return {
+    ...step,
+    powerRequired: "off",
+    requiredPowerState: "unplugged",
+    requiresConfirmKey: step.requiresConfirmKey || `confirm_${step.id}_safe_power_off`,
+    safetyWarning:
+      normalizeText(step.safetyWarning) ||
+      "Power state is uncertain, so keep the appliance unplugged and stop if anything feels unsafe."
+  };
+}
+
+function insertPowerTransitionSteps(steps, context = {}) {
+  if (!Array.isArray(steps) || !steps.length) return [];
+
+  const appliance =
+    normalizeApplianceType(context.appliance || context.applianceType || "") ||
+    normalizeText(context.appliance || context.applianceType) ||
+    "appliance";
+
+  const result = [];
+  let lastPowerState = "unknown";
+
+  for (const rawStep of steps) {
+    let step = {
+      ...rawStep,
+      requiredPowerState: normalizeRepairRequiredPowerState(rawStep, rawStep?.powerRequired),
+      powerTransition: normalizeRepairPowerTransition(rawStep?.powerTransition)
+    };
+
+    if (step.powerTransition !== "none") {
+      step.powerRequired = step.requiredPowerState === "plugged_in" ? "on" : "off";
+      result.push(step);
+      lastPowerState = step.requiredPowerState === "plugged_in" ? "plugged_in" : "unplugged";
+      continue;
+    }
+
+    if (step.requiredPowerState === "unknown") {
+      step = hardenUnknownRepairStep(step);
+    }
+
+    if (step.requiredPowerState === "plugged_in") {
+      if (lastPowerState !== "plugged_in") {
+        result.push(makePowerTransitionStep("plug_in_for_test", appliance, result.length + 1));
+      }
+
+      result.push(hardenPoweredRepairStep(step));
+      lastPowerState = "plugged_in";
+      continue;
+    }
+
+    step.powerRequired = "off";
+    step.requiredPowerState = "unplugged";
+
+    if (lastPowerState === "plugged_in") {
+      result.push(makePowerTransitionStep("unplug_after_test", appliance, result.length + 1));
+      lastPowerState = "unplugged";
+    } else if (lastPowerState === "unknown" && !isExplicitUnplugStep(step)) {
+      result.push(makePowerTransitionStep("unplug", appliance, result.length + 1));
+      lastPowerState = "unplugged";
+    }
+
+    result.push(step);
+    lastPowerState = "unplugged";
+  }
+
+  return result;
 }
 /* =========================================================
    Diagnosis memory and intent tracking
@@ -7181,7 +7362,12 @@ function validateRepairPowerGate(session, step) {
     return { blocked: true, message: "No current step found.", expectedPowerState: null };
   }
 
-  const req = step.powerRequired;
+  const req =
+    step.requiredPowerState === "plugged_in"
+      ? "on"
+      : step.requiredPowerState === "unplugged"
+        ? "off"
+        : step.powerRequired;
 
   if (req === "off" && session.powerState !== "off") {
     return {
@@ -8740,14 +8926,14 @@ app.post("/session/repair/prep", requireSession, requireResolvedPartForRepair, a
       ) {
         template = {
           tools: Array.isArray(dynamicPlan.tools) ? dynamicPlan.tools : template.tools,
-          steps: normalizeRepairSteps(dynamicPlan.steps)
+          steps: normalizeRepairSteps(dynamicPlan.steps, { appliance })
         };
       }
     } catch (err) {
       console.error("repair prep dynamic plan failed:", err?.message || err);
     }
 
-    const normalizedPreparedSteps = normalizeRepairSteps(template.steps || []);
+    const normalizedPreparedSteps = normalizeRepairSteps(template.steps || [], { appliance });
 
     const preparedPlan = {
       tools: Array.isArray(template.tools) ? template.tools : [],
@@ -8774,6 +8960,8 @@ app.post("/session/repair/prep", requireSession, requireResolvedPartForRepair, a
                 id: step.id,
                 title: step.title,
                 powerRequired: step.powerRequired,
+                requiredPowerState: step.requiredPowerState || null,
+                powerTransition: step.powerTransition || "none",
                 whyItMatters: step.whyItMatters || null,
                 safetyWarning: step.safetyWarning || null,
                 expectedResult: step.expectedResult || null,
@@ -8838,13 +9026,13 @@ app.post("/session/repair/start", requireSession, requireResolvedPartForRepair, 
       tools: Array.isArray(session.repairPreparedPlan.tools)
         ? session.repairPreparedPlan.tools
         : [],
-      steps: normalizeRepairSteps(session.repairPreparedPlan.steps)
+      steps: normalizeRepairSteps(session.repairPreparedPlan.steps, { appliance: session.appliance })
     };
   } else {
     template = await buildDynamicRepairPlan({ session });
 
     if (Array.isArray(template?.steps) && template.steps.length > 0) {
-      template.steps = normalizeRepairSteps(template.steps);
+      template.steps = normalizeRepairSteps(template.steps, { appliance: session.appliance });
     } else {
       template = getRepairTemplate({
         appliance: session.appliance,
@@ -8854,7 +9042,7 @@ app.post("/session/repair/start", requireSession, requireResolvedPartForRepair, 
           session.diagnosis?.component
       });
 
-      template.steps = normalizeRepairSteps(template.steps);
+      template.steps = normalizeRepairSteps(template.steps, { appliance: session.appliance });
     }
   }
 
