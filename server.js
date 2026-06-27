@@ -3502,6 +3502,8 @@ function allowedQuestionForSession(session, question) {
       "dryer_start_behavior",
       "dryerPowerSourceCheck",
       "dryer_power_source_check",
+      "dryerPowerDisplayStatus",
+      "dryer_power_display_status",
       "dryerDisplayStartResponse",
       "dryer_display_start_response",
       "drumMovesByHand",
@@ -3522,6 +3524,8 @@ function allowedQuestionForSession(session, question) {
       "error_codes",
       "controlLockStatus",
       "control_lock_status",
+      "dryerErrorOrControlLockStatus",
+      "dryer_error_or_control_lock_status",
       "symptomDetails",
       "main_symptom",
       "details"
@@ -5256,6 +5260,20 @@ function normalizeQuestionIntent(key) {
     }
   }
 
+  const explicitIntentOverrides = {
+    dryer_power_display_status: "dryer_power_display_status",
+    dryerpowerdisplaystatus: "dryer_power_display_status",
+    dryer_door_switch_light_test: "dryer_door_switch_light_test",
+    dryerdoorswitchlighttest: "dryer_door_switch_light_test",
+    dryer_drum_attempts_to_move: "dryer_drum_attempts_to_move",
+    dryerdrumattemptstomove: "dryer_drum_attempts_to_move",
+    dryer_error_or_control_lock_status: "dryer_error_or_control_lock_status",
+    dryererrororcontrollockstatus: "dryer_error_or_control_lock_status"
+  };
+
+  if (explicitIntentOverrides[normalized]) return explicitIntentOverrides[normalized];
+  if (explicitIntentOverrides[compact]) return explicitIntentOverrides[compact];
+
   if (aliasMap[normalized]) return aliasMap[normalized];
   if (aliasMap[compact]) return aliasMap[compact];
 
@@ -5414,6 +5432,67 @@ function markQuestionAsked(session, key) {
   }
 }
 
+function normalizeQuestionChoices(choices) {
+  return (Array.isArray(choices) ? choices : [])
+    .map((choice) => normalizeText(choice).toLowerCase())
+    .filter(Boolean);
+}
+
+function getQuestionKey(questionOrInput) {
+  return normalizeText(
+    questionOrInput?.input?.key ||
+      questionOrInput?.key ||
+      questionOrInput?.id ||
+      ""
+  );
+}
+
+function getQuestionIntent(questionOrInput) {
+  return normalizeQuestionIntent(getQuestionKey(questionOrInput));
+}
+
+function getQuestionChoiceSignature(questionOrInput) {
+  const choices =
+    questionOrInput?.input?.choices ||
+    questionOrInput?.input?.options ||
+    questionOrInput?.choices ||
+    questionOrInput?.options ||
+    [];
+
+  const normalized = normalizeQuestionChoices(choices);
+  return normalized.length ? normalized.join("|") : "";
+}
+
+function recordDiagnosticQuestion(session, question) {
+  ensureDiagnosisFields(session);
+
+  const input = normalizeTurnInput({ input: question?.input || question });
+  if (!input || input.type === "none") return;
+
+  const rawKey = getQuestionKey(input);
+  const intent = getQuestionIntent(input);
+  if (!intent) return;
+
+  markQuestionAsked(session, rawKey || intent);
+
+  const entry = {
+    type: "question",
+    at: new Date().toISOString(),
+    key: rawKey || null,
+    normalizedKey: normalizeText(rawKey).toLowerCase() || null,
+    intent,
+    inputType: input.type,
+    choices: normalizeQuestionChoices(input.choices),
+    choiceSignature: getQuestionChoiceSignature(input),
+    assistant: normalizeText(question?.assistant || "")
+  };
+
+  session.diagnosis.questionHistory.push(entry);
+  if (session.diagnosis.questionHistory.length > 80) {
+    session.diagnosis.questionHistory.splice(0, session.diagnosis.questionHistory.length - 80);
+  }
+}
+
 function alreadyAskedQuestion(session, key) {
   ensureDiagnosisFields(session);
   const intent = normalizeQuestionIntent(key);
@@ -5426,8 +5505,10 @@ function alreadyAskedQuestion(session, key) {
   return list.includes(intent);
 }
 
-function markAnswerCaptured(session, key, value) {
+function recordDiagnosticAnswer(session, input) {
   ensureDiagnosisFields(session);
+  const key = input?.key;
+  const value = input?.value;
   const intent = normalizeQuestionIntent(key);
   if (!intent) return;
 
@@ -5436,11 +5517,83 @@ function markAnswerCaptured(session, key, value) {
     session.diagnosis.answeredKeys.push(intent);
   }
 
+  if (!Array.isArray(session.diagnosis.answeredQuestionKeys)) session.diagnosis.answeredQuestionKeys = [];
+  if (!session.diagnosis.answeredQuestionKeys.includes(intent)) {
+    session.diagnosis.answeredQuestionKeys.push(intent);
+  }
+
   if (!session.diagnosis.answersByIntent || typeof session.diagnosis.answersByIntent !== "object") {
     session.diagnosis.answersByIntent = {};
   }
 
   session.diagnosis.answersByIntent[intent] = value;
+
+  const entry = {
+    type: "answer",
+    at: new Date().toISOString(),
+    key: normalizeText(key) || null,
+    normalizedKey: normalizeText(key).toLowerCase() || null,
+    intent,
+    value
+  };
+
+  session.diagnosis.questionHistory.push(entry);
+  if (session.diagnosis.questionHistory.length > 80) {
+    session.diagnosis.questionHistory.splice(0, session.diagnosis.questionHistory.length - 80);
+  }
+}
+
+function markAnswerCaptured(session, key, value) {
+  recordDiagnosticAnswer(session, { key, value });
+}
+
+function hasAlreadyAnsweredQuestion(session, question) {
+  ensureDiagnosisFields(session);
+  const intent = getQuestionIntent(question);
+  if (!intent) return false;
+
+  const answered = new Set([
+    ...(Array.isArray(session.diagnosis.answeredKeys) ? session.diagnosis.answeredKeys : []),
+    ...(Array.isArray(session.diagnosis.answeredQuestionKeys) ? session.diagnosis.answeredQuestionKeys : []),
+    ...Object.keys(session.diagnosis.answersByIntent || {}).map((key) => normalizeQuestionIntent(key))
+  ].filter(Boolean));
+
+  if (answered.has(intent)) return true;
+
+  const key = getQuestionKey(question);
+  return key ? hasMeaningfulAnswerByIntent(session, key) : false;
+}
+
+function getLastDiagnosticQuestion(session) {
+  ensureDiagnosisFields(session);
+  const history = Array.isArray(session.diagnosis.questionHistory)
+    ? session.diagnosis.questionHistory
+    : [];
+
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    if (history[i]?.type === "question") return history[i];
+  }
+
+  return null;
+}
+
+function choicesMatchPreviousQuestion(session, question) {
+  const signature = getQuestionChoiceSignature(question);
+  if (!signature) return false;
+
+  const last = getLastDiagnosticQuestion(session);
+  return !!last?.choiceSignature && last.choiceSignature === signature;
+}
+
+function shouldRejectDiagnosticQuestion(session, question) {
+  if (!question || !question.input) return true;
+  const input = normalizeTurnInput({ input: question.input });
+  if (!input || input.type === "none") return true;
+  if (!allowedQuestionForSession(session, { ...question, input })) return true;
+  if (alreadyAskedQuestion(session, input.key)) return true;
+  if (hasAlreadyAnsweredQuestion(session, { ...question, input })) return true;
+  if (choicesMatchPreviousQuestion(session, { ...question, input })) return true;
+  return false;
 }
 
 function hasMeaningfulAnswerByIntent(session, keyOrIntent) {
@@ -5754,6 +5907,15 @@ const EVIDENCE_QUESTION_BANK = {
     }
   },
 
+  dryer_power_display_status: {
+    assistant: "Before and after you press Start, what do the dryer display or lights do?",
+    input: {
+      type: "choice",
+      key: "dryerPowerDisplayStatus",
+      choices: ["display is normal", "no lights or display", "lights are on but Start does nothing", "display changes or flashes", "not sure"]
+    }
+  },
+
   dryer_door_switch_light_test: {
     assistant: "When you open and close the dryer door, does the drum light or door switch seem to respond?",
     input: {
@@ -5813,6 +5975,15 @@ const EVIDENCE_QUESTION_BANK = {
     input: {
       type: "choice",
       key: "errorCodes",
+      choices: ["error code showing", "control lock is on", "blinking lights", "no code or lock", "not sure"]
+    }
+  },
+
+  dryer_error_or_control_lock_status: {
+    assistant: "Do you see an error code, blinking light, or control lock indicator?",
+    input: {
+      type: "choice",
+      key: "dryerErrorOrControlLockStatus",
       choices: ["error code showing", "control lock is on", "blinking lights", "no code or lock", "not sure"]
     }
   },
@@ -5959,7 +6130,7 @@ function buildDryerNoStartFallbackQuestion(session) {
 
   const chain = [
     startBehavior,
-    buildEvidenceQuestionForKey(session, "dryer_power_source_check", {
+    buildEvidenceQuestionForKey(session, "dryer_power_display_status", {
       reason: "Power and display status is the next dryer no-start check.",
       narrowsTo: ["power supply", "control board", "door switch"]
     }),
@@ -5975,7 +6146,7 @@ function buildDryerNoStartFallbackQuestion(session) {
       reason: "Drum movement attempt helps separate motor start failure from control or switch failure.",
       narrowsTo: ["drive motor", "belt path", "control path"]
     }),
-    buildEvidenceQuestionForKey(session, "error_codes", {
+    buildEvidenceQuestionForKey(session, "dryer_error_or_control_lock_status", {
       reason: "Error codes or control lock status can explain a no-start condition without replacing parts.",
       narrowsTo: ["control lock", "control board", "power path"]
     })
@@ -5986,8 +6157,7 @@ function buildDryerNoStartFallbackQuestion(session) {
     const input = normalizeTurnInput({ input: item.input });
     const key = input?.key || "";
     if (!key) continue;
-    if (hasMeaningfulAnswerByIntent(session, key)) continue;
-    if (alreadyAskedQuestion(session, key)) continue;
+    if (shouldRejectDiagnosticQuestion(session, { ...item, input })) continue;
 
     return {
       assistant: item.assistant,
@@ -6482,7 +6652,9 @@ function ensureDiagnosisFields(session) {
     locked: false,
 
     askedQuestionKeys: [],
+    answeredQuestionKeys: [],
     answeredKeys: [],
+    questionHistory: [],
     answersByIntent: {},
     rejectedHypotheses: [],
     proposedHypothesis: null,
@@ -6515,7 +6687,9 @@ function ensureDiagnosisFields(session) {
   if (typeof dx.locked !== "boolean") dx.locked = false;
 
   if (!Array.isArray(dx.askedQuestionKeys)) dx.askedQuestionKeys = [];
+  if (!Array.isArray(dx.answeredQuestionKeys)) dx.answeredQuestionKeys = [];
   if (!Array.isArray(dx.answeredKeys)) dx.answeredKeys = [];
+  if (!Array.isArray(dx.questionHistory)) dx.questionHistory = [];
   if (!dx.answersByIntent || typeof dx.answersByIntent !== "object") dx.answersByIntent = {};
   if (!Array.isArray(dx.rejectedHypotheses)) dx.rejectedHypotheses = [];
   if (typeof dx.proposedHypothesis === "undefined") dx.proposedHypothesis = null;
@@ -6920,7 +7094,9 @@ async function createDiagSession({ appliance = null, issueCategory = null, sympt
       locked: false,
 
       askedQuestionKeys: [],
+      answeredQuestionKeys: [],
       answeredKeys: [],
+      questionHistory: [],
       answersByIntent: {},
       rejectedHypotheses: [],
       proposedHypothesis: null,
@@ -8016,6 +8192,9 @@ app.post("/session/diagnose/next", requireSession, async (req, res) => {
 
     let key = inputKey || keyTop;
     let value = inputKey ? inputValue : valueTop;
+    const acceptedLikelyDiagnosis =
+      normalizeText(key).toLowerCase() === "accept_likely_diagnosis" &&
+      normalizeText(value).toLowerCase() === "continue";
 
     if ((!key || typeof value === "undefined") && normalizeText(message)) {
       const bound = bindMessageToPendingQuestion(session, message);
@@ -8040,7 +8219,7 @@ app.post("/session/diagnose/next", requireSession, async (req, res) => {
 
     let mergedAnswers = answers ? { ...answers } : {};
 
-    if (key && value !== undefined) {
+    if (key && value !== undefined && !acceptedLikelyDiagnosis) {
       const nk = normalizeAnswerKey(key);
       mergedAnswers[nk] = value;
       markAnswerCaptured(session, nk, value);
@@ -8320,6 +8499,46 @@ if (gate1.blockRepair) {
 }
 const shouldLock = evaluateLockReadiness(session);
 
+if (acceptedLikelyDiagnosis) {
+  const locked = lockDiagnosisForPartLookup(session);
+
+  if (!locked) {
+    return res.status(409).json({
+      error: "No likely diagnosis is available to continue",
+      sessionId: session.sessionId
+    });
+  }
+
+  session.diagnosis.reasoning.lastAction = {
+    type: "likely_diagnosis_accepted",
+    at: new Date().toISOString(),
+    confidence: session.diagnosis.confidence ?? null,
+    component: session.diagnosis.suggestedComponent || session.diagnosis.component || null
+  };
+
+  const dxPayload = buildDiagnosisResponse(session, true);
+  await req.saveFxSession();
+
+  const responseObj = buildSuccessResponse(session, {
+    type: "diagnose_locked",
+    nextAction: "part_lookup",
+    diagnosis: dxPayload,
+    ui: {
+      assistantMessage:
+        "Likely diagnosis accepted. Next I need the model number so I can confirm the exact replacement part.",
+      input: { type: "none", key: "", choices: [] }
+    },
+    data: {
+      userAcceptedLikelyDiagnosis: true,
+      reasoning: dxPayload.reasoning,
+      topHypotheses: dxPayload.topHypotheses
+    }
+  });
+
+  await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
+  return res.status(200).json(responseObj);
+}
+
 if (shouldLock || canCautiouslyLockDiagnosis(session)) {
   lockDiagnosisForPartLookup(session);
 
@@ -8347,39 +8566,70 @@ if (shouldLock || canCautiouslyLockDiagnosis(session)) {
 }
 
 const next = await chooseNextDiagnosticAction({ session });
-let question = next?.question || null;
+let question = null;
+const lockDecision = session.diagnosis?.reasoning?.lockDecision || {};
+const confidence = normalizeConfidence(session.diagnosis?.confidence || 0);
+const smartMissingQuestion = buildBestMissingEvidenceQuestion(session, lockDecision);
+const fallbackQuestion = selectHighValueFallbackQuestion(session);
+const dryerNoStartQuestion = buildDryerNoStartFallbackQuestion(session);
 
-if (!question || !question.input || question.input.type === "none") {
-  const lockDecision = session.diagnosis?.reasoning?.lockDecision || {};
-  const confidence = normalizeConfidence(session.diagnosis?.confidence || 0);
-  const smartMissingQuestion = buildBestMissingEvidenceQuestion(session, lockDecision);
+const questionCandidates = [
+  next?.question || null,
+  confidence < 70 ? smartMissingQuestion : null,
+  dryerNoStartQuestion,
+  fallbackQuestion,
+  confidence >= 70 ? smartMissingQuestion : null
+];
 
-  if (confidence < 70 && smartMissingQuestion) {
-    question = {
-      assistant: smartMissingQuestion.assistant,
-      input: smartMissingQuestion.input,
-      questionMeta: smartMissingQuestion.questionMeta
-    };
-  } else {
-    question = selectHighValueFallbackQuestion(session);
+for (const candidate of questionCandidates) {
+  if (!candidate) continue;
+  const normalizedInput = normalizeTurnInput({ input: candidate.input });
+  const normalizedCandidate = {
+    assistant: candidate.assistant || "",
+    input: normalizedInput,
+    questionMeta: candidate.questionMeta || {}
+  };
+
+  if (shouldRejectDiagnosticQuestion(session, normalizedCandidate)) {
+    continue;
   }
+
+  question = normalizedCandidate;
+  break;
 }
 
-if (!question || !allowedQuestionForSession(session, question)) {
-  question =
-    buildDryerNoStartFallbackQuestion(session) ||
-    selectHighValueFallbackQuestion(session) ||
-    {
-      assistant: "",
-      input: { type: "none", key: "", choices: [] },
-      questionMeta: {
-        goal: "stop_repeat_loop",
-        reason: "No useful unanswered diagnostic question remains.",
-        rulesUsed: ["diagnosis_route_no_repeat_guard"],
-        eliminates: [],
-        narrowsTo: ["top_likely_components"]
-      }
-    };
+if (!question) {
+  session.diagnosis.status = "review";
+  session.diagnosis.stage = "review";
+  session.diagnosis.locked = false;
+  session.diagnosis.currentQuestion = null;
+  session.mode = "diagnose";
+
+  const dxPayload = buildDiagnosisResponse(session, false);
+  const assistantMessage =
+    "I have enough information to stop asking repeated questions. Review the likely diagnosis below.";
+
+  pushDiagTurn(session, "assistant", assistantMessage);
+  await req.saveFxSession();
+
+  const responseObj = buildSuccessResponse(session, {
+    type: "diagnose_review",
+    nextAction: "review",
+    diagnosis: dxPayload,
+    ui: {
+      assistantMessage,
+      input: { type: "none", key: "", choices: [] }
+    },
+    data: {
+      reasoning: dxPayload.reasoning,
+      topHypotheses: dxPayload.topHypotheses,
+      lockDecision: session.diagnosis?.reasoning?.lockDecision || {},
+      noFreshDiagnosticQuestion: true
+    }
+  });
+
+  await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
+  return res.status(200).json(responseObj);
 }
 
     const normalizedInput = normalizeTurnInput({ input: question.input });
@@ -8387,7 +8637,7 @@ if (!question || !allowedQuestionForSession(session, question)) {
     setCurrentQuestion(session, normalizedInput);
 
     if (normalizedInput.type !== "none" && normalizedInput.key) {
-      markQuestionAsked(session, normalizedInput.key);
+      recordDiagnosticQuestion(session, { ...question, input: normalizedInput });
     }
 
     if (question.assistant) {
