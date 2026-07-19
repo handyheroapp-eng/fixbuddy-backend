@@ -4351,7 +4351,17 @@ Return only valid JSON:
       "whyItMatters": "",
       "safetyWarning": "",
       "expectedResult": "",
-      "ifNot": ""
+      "ifNot": "",
+      "testType": "continuity" | "resistance" | "voltage" | "mechanical" | "visual" | "functional",
+      "visualType": "",
+      "visualAssetKey": "",
+      "visualTitle": "",
+      "visualDescription": "",
+      "visualLabels": [""],
+      "visualWarnings": [""],
+      "visualCallouts": [""],
+      "multimeterSetup": {},
+      "componentLocation": ""
     }
   ]
 }
@@ -4387,6 +4397,10 @@ Field rules:
 - expectedResult must tell the user what they should see or confirm before moving on.
 - ifNot must tell the user what to do if the expected result does not happen.
 - confirmPrompt must match the actual step and be easy for the user to confirm.
+- testType must be one of continuity, resistance, voltage, mechanical, visual, or functional.
+- continuity, resistance, capacitance, and diode checks require powerRequired "off".
+- voltage and functional powered checks require powerRequired "on" and must not ask the user to touch exposed wiring.
+- Use visual fields only when they add useful guidance. Do not invent model-specific drawings.
 
 Safety rules:
 - Do not tell the user to touch live wiring.
@@ -4513,6 +4527,145 @@ Output rules:
 
   return { tools, steps };
 }
+
+const REPAIR_VISUAL_ASSET_KEYS = new Set([
+  "dryer_belt_path",
+  "dryer_idler_pulley",
+  "dryer_belt_switch",
+  "dryer_thermal_fuse",
+  "dryer_heating_element",
+  "dryer_door_switch",
+  "dryer_motor",
+  "washer_drain_pump",
+  "washer_lid_switch",
+  "washer_drive_belt",
+  "dishwasher_drain_pump",
+  "dishwasher_float_switch",
+  "dishwasher_heating_element",
+  "refrigerator_condenser_fan",
+  "refrigerator_evaporator_fan",
+  "refrigerator_start_relay",
+  "oven_bake_element",
+  "oven_igniter",
+  "multimeter_continuity",
+  "multimeter_resistance",
+  "garage_photo_eye_alignment",
+  "garage_drive_chain_belt",
+  "garage_emergency_release",
+  "garage_spring_danger_zone",
+  "garage_cable_drum_danger_zone",
+  "sink_ptrap",
+  "sink_shutoff_valve",
+  "faucet_cartridge",
+  "sink_leak_source_map",
+  "shower_cartridge",
+  "tub_drain_stopper",
+  "tub_spout_diverter",
+  "outlet_gfci_buttons",
+  "outlet_tester",
+  "outlet_power_off_breaker",
+  "outlet_do_not_touch_wires",
+  "light_bulb_socket",
+  "light_wall_switch",
+  "light_fixture_canopy",
+  "light_voltage_tester",
+  "light_burned_socket_warning"
+]);
+
+function normalizeRepairVisualAssetKey(value) {
+  const key = normalizeText(value).toLowerCase().replace(/[^a-z0-9_]+/g, "_");
+  return REPAIR_VISUAL_ASSET_KEYS.has(key) ? key : "";
+}
+
+function inferRepairVisualAssetKey({ appliance, component, step, testType }) {
+  const a = normalizeText(appliance).toLowerCase();
+  const text = [
+    component,
+    step?.id,
+    step?.title,
+    ...(Array.isArray(step?.instructions) ? step.instructions : []),
+    step?.confirmPrompt,
+    step?.expectedResult,
+    testType
+  ]
+    .map((x) => normalizeText(x).toLowerCase())
+    .filter(Boolean)
+    .join(" ");
+
+  if (testType === "continuity") return "multimeter_continuity";
+  if (testType === "resistance") return "multimeter_resistance";
+
+  if (a.includes("dryer")) {
+    if (/belt.*switch|switch.*belt/.test(text)) return "dryer_belt_switch";
+    if (/idler|pulley|belt path/.test(text)) return "dryer_belt_path";
+    if (/thermal fuse|fuse/.test(text)) return "dryer_thermal_fuse";
+    if (/heat|heater|element/.test(text)) return "dryer_heating_element";
+    if (/door switch|door/.test(text)) return "dryer_door_switch";
+    if (/motor/.test(text)) return "dryer_motor";
+  }
+
+  if (a.includes("washer") || a.includes("washing")) {
+    if (/drain|pump/.test(text)) return "washer_drain_pump";
+    if (/lid|lock|switch/.test(text)) return "washer_lid_switch";
+    if (/belt|pulley/.test(text)) return "washer_drive_belt";
+  }
+
+  if (a.includes("dishwasher")) {
+    if (/drain|pump/.test(text)) return "dishwasher_drain_pump";
+    if (/float|overflow/.test(text)) return "dishwasher_float_switch";
+    if (/heat|element/.test(text)) return "dishwasher_heating_element";
+  }
+
+  if (a.includes("refrigerator") || a.includes("fridge")) {
+    if (/condenser|rear fan/.test(text)) return "refrigerator_condenser_fan";
+    if (/evaporator|freezer fan/.test(text)) return "refrigerator_evaporator_fan";
+    if (/start relay|relay|compressor/.test(text)) return "refrigerator_start_relay";
+  }
+
+  if (a.includes("oven") || a.includes("range")) {
+    if (/igniter|ignitor/.test(text)) return "oven_igniter";
+    if (/bake|element/.test(text)) return "oven_bake_element";
+  }
+
+  if (a.includes("garage")) {
+    if (/photo|eye|sensor|beam/.test(text)) return "garage_photo_eye_alignment";
+    if (/chain|belt|rail|trolley/.test(text)) return "garage_drive_chain_belt";
+    if (/release|red cord|manual/.test(text)) return "garage_emergency_release";
+    if (/spring|torsion/.test(text)) return "garage_spring_danger_zone";
+    if (/cable|drum/.test(text)) return "garage_cable_drum_danger_zone";
+  }
+
+  if (a.includes("sink") || a.includes("faucet")) {
+    if (/p.?trap|trap|drain/.test(text)) return "sink_ptrap";
+    if (/shut.?off|supply|valve/.test(text)) return "sink_shutoff_valve";
+    if (/cartridge|handle/.test(text)) return "faucet_cartridge";
+    if (/leak/.test(text)) return "sink_leak_source_map";
+  }
+
+  if (a.includes("tub") || a.includes("shower")) {
+    if (/cartridge|valve/.test(text)) return "shower_cartridge";
+    if (/stopper|drain/.test(text)) return "tub_drain_stopper";
+    if (/spout|diverter/.test(text)) return "tub_spout_diverter";
+  }
+
+  if (a.includes("outlet") || a.includes("socket") || a.includes("receptacle")) {
+    if (/gfci|reset|test button/.test(text)) return "outlet_gfci_buttons";
+    if (/tester|indicator/.test(text)) return "outlet_tester";
+    if (/breaker|power off/.test(text)) return "outlet_power_off_breaker";
+    if (/wire|terminal|live/.test(text)) return "outlet_do_not_touch_wires";
+  }
+
+  if (a.includes("light") || a.includes("fixture")) {
+    if (/socket|bulb/.test(text)) return "light_bulb_socket";
+    if (/switch/.test(text)) return "light_wall_switch";
+    if (/canopy|fixture|mounting/.test(text)) return "light_fixture_canopy";
+    if (/voltage|tester/.test(text)) return "light_voltage_tester";
+    if (/burn|scorch|heat damage/.test(text)) return "light_burned_socket_warning";
+  }
+
+  return "";
+}
+
 function normalizeRepairSteps(steps, context = {}) {
   if (!Array.isArray(steps)) return [];
 
@@ -4579,6 +4732,26 @@ function normalizeRepairSteps(steps, context = {}) {
         normalizeText(step?.ifNot) ||
         "Stop and recheck the previous step. If something does not look right or does not move safely, do not force it.";
 
+      const testType = normalizeRepairTestType(
+        step?.testType,
+        `${safeTitle} ${instructions.join(" ")} ${confirmPrompt}`
+      );
+
+      if (["continuity", "resistance"].includes(testType)) {
+        powerRequired = "off";
+      } else if (["voltage", "functional"].includes(testType)) {
+        powerRequired = "on";
+      }
+
+      const visualAssetKey =
+        normalizeRepairVisualAssetKey(step?.visualAssetKey) ||
+        inferRepairVisualAssetKey({
+          appliance: context.appliance || context.applianceType,
+          component: context.component || context.componentKey,
+          step,
+          testType
+        });
+
       return {
         id: safeId,
         title: safeTitle,
@@ -4591,7 +4764,17 @@ function normalizeRepairSteps(steps, context = {}) {
         whyItMatters,
         safetyWarning,
         expectedResult,
-        ifNot
+        ifNot,
+        testType,
+        visualType: normalizeText(step?.visualType) || (visualAssetKey ? "diagram" : ""),
+        visualAssetKey,
+        visualTitle: normalizeText(step?.visualTitle) || (visualAssetKey ? safeTitle : ""),
+        visualDescription: normalizeText(step?.visualDescription),
+        visualLabels: normalizeStringArray(step?.visualLabels, 10),
+        visualWarnings: normalizeStringArray(step?.visualWarnings, 8),
+        visualCallouts: normalizeStringArray(step?.visualCallouts, 8),
+        multimeterSetup: normalizeMultimeterSetup(step?.multimeterSetup),
+        componentLocation: normalizeText(step?.componentLocation)
       };
     })
     .filter((step) => step.instructions.length > 0);
@@ -4634,6 +4817,37 @@ function normalizeRepairPowerTransition(value) {
   }
 
   return "none";
+}
+
+function normalizeRepairTestType(value, text = "") {
+  const raw = normalizeText(value).toLowerCase();
+  const joined = normalizeText(text).toLowerCase();
+  const allowed = ["continuity", "resistance", "voltage", "mechanical", "visual", "functional"];
+  if (allowed.includes(raw)) return raw;
+  if (/continuity|diode|capacitance/.test(joined)) return "continuity";
+  if (/ohm|resistance/.test(joined)) return "resistance";
+  if (/volt|voltage/.test(joined)) return "voltage";
+  if (/spin|turn|move|rotate|press|pull/.test(joined)) return "mechanical";
+  if (/look|inspect|locate|see|visual/.test(joined)) return "visual";
+  if (/run|start|operate|cycle/.test(joined)) return "functional";
+  return "visual";
+}
+
+function normalizeStringArray(value, max = 8) {
+  if (Array.isArray(value)) return value.map((x) => normalizeText(x)).filter(Boolean).slice(0, max);
+  if (typeof value === "string") return value.split(/\r?\n|;/).map((x) => normalizeText(x)).filter(Boolean).slice(0, max);
+  return [];
+}
+
+function normalizeMultimeterSetup(value) {
+  if (!value || typeof value !== "object") return null;
+  const result = {};
+  for (const [key, rawValue] of Object.entries(value)) {
+    const safeKey = normalizeText(key);
+    const safeValue = normalizeText(rawValue);
+    if (safeKey && safeValue) result[safeKey] = safeValue;
+  }
+  return Object.keys(result).length ? result : null;
 }
 
 function repairStepText(step) {
@@ -6609,6 +6823,14 @@ function buildSafetySummary(session) {
 
 function ensurePhase4Fields(session) {
   session.repairFlow = session.repairFlow || {};
+  if (!Array.isArray(session.powerTransitions)) session.powerTransitions = [];
+  if (typeof session.repairFlow.currentStepIndex !== "number") session.repairFlow.currentStepIndex = 0;
+  if (typeof session.repairFlow.highestReachedStepIndex !== "number") {
+    session.repairFlow.highestReachedStepIndex = session.repairFlow.currentStepIndex || 0;
+  }
+  if (typeof session.repairFlow.reviewedStepIndex === "undefined") {
+    session.repairFlow.reviewedStepIndex = null;
+  }
   session.repairFlow.validation = session.repairFlow.validation || {
     status: "not_validated",
     checkedAt: null,
@@ -6751,6 +6973,8 @@ function buildStatusSnapshot(session) {
 
     repairStatus: rf?.status || "not_started",
     repairStepIndex: typeof rf?.currentStepIndex === "number" ? rf.currentStepIndex : null,
+    highestReachedStepIndex: typeof rf?.highestReachedStepIndex === "number" ? rf.highestReachedStepIndex : null,
+    reviewedStepIndex: typeof rf?.reviewedStepIndex === "number" ? rf.reviewedStepIndex : null,
 
     validationStatus: val?.status || "not_validated",
     suspectedComponent: pl?.suspectedComponent || null,
@@ -7071,6 +7295,7 @@ async function createDiagSession({ appliance = null, issueCategory = null, sympt
     issueCategory,
     symptoms: Array.isArray(symptoms) ? symptoms : [],
     powerState: "unknown",
+    powerTransitions: [],
     mode: "diagnose",
 
     diagnosis: {
@@ -7154,6 +7379,8 @@ async function createDiagSession({ appliance = null, issueCategory = null, sympt
       tools: [],
       steps: [],
       currentStepIndex: 0,
+      highestReachedStepIndex: 0,
+      reviewedStepIndex: null,
       confirmations: {},
       startedAt: null,
       updatedAt: null,
@@ -7758,6 +7985,16 @@ function requireResolvedPartForRepair(req, res, next) {
   if (rs.replacementReady !== true) {
     return res.status(409).json({
       error: "Resolved part is not marked replacementReady",
+      sessionId: session.sessionId,
+      statusSnapshot: buildStatusSnapshot(session)
+    });
+  }
+
+  if (!normalizeText(rs.oemPartNumber)) {
+    return res.status(409).json({
+      error: "Exact OEM part number is required before repair can begin.",
+      reason: "missing_oem_part_number",
+      partResolution: rs,
       sessionId: session.sessionId,
       statusSnapshot: buildStatusSnapshot(session)
     });
@@ -8697,7 +8934,15 @@ app.post("/session/power", requireSession, async (req, res) => {
     return res.status(400).json({ error: 'powerState must be "on" or "off"' });
   }
 
+  const previousPowerState = session.powerState || "unknown";
   session.powerState = powerState;
+  if (!Array.isArray(session.powerTransitions)) session.powerTransitions = [];
+  session.powerTransitions.push({
+    from: previousPowerState,
+    to: powerState,
+    at: new Date().toISOString(),
+    source: "user_checkpoint"
+  });
   await req.saveFxSession();
 
   res.json({ ok: true, session, statusSnapshot: buildStatusSnapshot(session) });
@@ -8982,6 +9227,8 @@ function resetRepairFlowForStart(session) {
   rf.tools = Array.isArray(rf.tools) ? rf.tools : [];
   rf.steps = Array.isArray(rf.steps) ? rf.steps : [];
   rf.currentStepIndex = 0;
+  rf.highestReachedStepIndex = 0;
+  rf.reviewedStepIndex = null;
   rf.confirmations = rf.confirmations && typeof rf.confirmations === "object" ? rf.confirmations : {};
 
   rf.startedAt = rf.startedAt || new Date().toISOString();
@@ -9106,6 +9353,11 @@ async function handleRepairNext(req, res) {
 
   if (nextIndex >= (rf.steps || []).length) {
     rf.status = "complete";
+    rf.highestReachedStepIndex = Math.max(
+      typeof rf.highestReachedStepIndex === "number" ? rf.highestReachedStepIndex : 0,
+      Math.max(0, (rf.steps || []).length - 1)
+    );
+    rf.reviewedStepIndex = null;
     rf.completedAt = new Date().toISOString();
     rf.updatedAt = new Date().toISOString();
     session.repairFlow = rf;
@@ -9128,6 +9380,11 @@ async function handleRepairNext(req, res) {
   }
 
   rf.currentStepIndex = nextIndex;
+  rf.highestReachedStepIndex = Math.max(
+    typeof rf.highestReachedStepIndex === "number" ? rf.highestReachedStepIndex : 0,
+    nextIndex
+  );
+  rf.reviewedStepIndex = null;
   rf.updatedAt = new Date().toISOString();
   session.repairFlow = rf;
   await req.saveFxSession();
@@ -9176,14 +9433,14 @@ app.post("/session/repair/prep", requireSession, requireResolvedPartForRepair, a
       ) {
         template = {
           tools: Array.isArray(dynamicPlan.tools) ? dynamicPlan.tools : template.tools,
-          steps: normalizeRepairSteps(dynamicPlan.steps, { appliance })
+          steps: normalizeRepairSteps(dynamicPlan.steps, { appliance, componentKey })
         };
       }
     } catch (err) {
       console.error("repair prep dynamic plan failed:", err?.message || err);
     }
 
-    const normalizedPreparedSteps = normalizeRepairSteps(template.steps || [], { appliance });
+    const normalizedPreparedSteps = normalizeRepairSteps(template.steps || [], { appliance, componentKey });
 
     const preparedPlan = {
       tools: Array.isArray(template.tools) ? template.tools : [],
@@ -9215,7 +9472,17 @@ app.post("/session/repair/prep", requireSession, requireResolvedPartForRepair, a
                 whyItMatters: step.whyItMatters || null,
                 safetyWarning: step.safetyWarning || null,
                 expectedResult: step.expectedResult || null,
-                ifNot: step.ifNot || null
+                ifNot: step.ifNot || null,
+                testType: step.testType || null,
+                visualType: step.visualType || null,
+                visualAssetKey: step.visualAssetKey || null,
+                visualTitle: step.visualTitle || null,
+                visualDescription: step.visualDescription || null,
+                visualLabels: step.visualLabels || [],
+                visualWarnings: step.visualWarnings || [],
+                visualCallouts: step.visualCallouts || [],
+                multimeterSetup: step.multimeterSetup || null,
+                componentLocation: step.componentLocation || null
               }))
             : []
         },
@@ -9276,13 +9543,25 @@ app.post("/session/repair/start", requireSession, requireResolvedPartForRepair, 
       tools: Array.isArray(session.repairPreparedPlan.tools)
         ? session.repairPreparedPlan.tools
         : [],
-      steps: normalizeRepairSteps(session.repairPreparedPlan.steps, { appliance: session.appliance })
+      steps: normalizeRepairSteps(session.repairPreparedPlan.steps, {
+        appliance: session.appliance,
+        componentKey:
+          session.partLookup?.suspectedComponent ||
+          session.diagnosis?.suggestedComponent ||
+          session.diagnosis?.component
+      })
     };
   } else {
     template = await buildDynamicRepairPlan({ session });
 
     if (Array.isArray(template?.steps) && template.steps.length > 0) {
-      template.steps = normalizeRepairSteps(template.steps, { appliance: session.appliance });
+      template.steps = normalizeRepairSteps(template.steps, {
+        appliance: session.appliance,
+        componentKey:
+          session.partLookup?.suspectedComponent ||
+          session.diagnosis?.suggestedComponent ||
+          session.diagnosis?.component
+      });
     } else {
       template = getRepairTemplate({
         appliance: session.appliance,
@@ -9292,7 +9571,13 @@ app.post("/session/repair/start", requireSession, requireResolvedPartForRepair, 
           session.diagnosis?.component
       });
 
-      template.steps = normalizeRepairSteps(template.steps, { appliance: session.appliance });
+      template.steps = normalizeRepairSteps(template.steps, {
+        appliance: session.appliance,
+        componentKey:
+          session.partLookup?.suspectedComponent ||
+          session.diagnosis?.suggestedComponent ||
+          session.diagnosis?.component
+      });
     }
   }
 
@@ -9457,8 +9742,72 @@ app.post("/session/repair/advance", requireSession, async (req, res) => {
   return handleRepairNext(req, res);
 });
 
+app.post("/session/repair/review-step", requireSession, async (req, res) => {
+  const session = req.fxSession;
+  ensurePhase4Fields(session);
+
+  const rf = session.repairFlow || {};
+  if (rf.status !== "active" && rf.status !== "complete") {
+    return res.status(409).json({
+      error: "Repair is not active.",
+      currentRepairStatus: rf.status || "not_started",
+      sessionId: session.sessionId,
+      statusSnapshot: buildStatusSnapshot(session)
+    });
+  }
+
+  const steps = Array.isArray(rf.steps) ? rf.steps : [];
+  const currentIndex = typeof rf.currentStepIndex === "number" ? rf.currentStepIndex : 0;
+  const highestReached = Math.max(
+    currentIndex,
+    typeof rf.highestReachedStepIndex === "number" ? rf.highestReachedStepIndex : currentIndex
+  );
+  const requestedIndex =
+    req.body?.stepIndex === null
+      ? null
+      : Number(req.body?.stepIndex);
+
+  if (requestedIndex === null) {
+    rf.reviewedStepIndex = null;
+  } else if (!Number.isInteger(requestedIndex) || requestedIndex < 0 || requestedIndex >= steps.length || requestedIndex > highestReached) {
+    return res.status(409).json({
+      error: "Repair step is locked until reached.",
+      requestedStepIndex: req.body?.stepIndex,
+      highestReachedStepIndex: highestReached,
+      sessionId: session.sessionId,
+      statusSnapshot: buildStatusSnapshot(session)
+    });
+  } else {
+    rf.reviewedStepIndex = requestedIndex === currentIndex ? null : requestedIndex;
+  }
+
+  rf.updatedAt = new Date().toISOString();
+  session.repairFlow = rf;
+  await req.saveFxSession();
+
+  const step = rf.reviewedStepIndex === null ? getCurrentRepairStep(session) : steps[rf.reviewedStepIndex];
+  const powerGate = validateRepairPowerGate(session, getCurrentRepairStep(session));
+  const adv = canAdvanceRepair(session, getCurrentRepairStep(session));
+
+  return res.json(
+    repairEnvelope({
+      type: "repair_review_step",
+      session,
+      step,
+      gate: powerGate,
+      canAdvance: adv,
+      extra: {
+        reviewMode: rf.reviewedStepIndex !== null,
+        reviewedStepIndex: rf.reviewedStepIndex,
+        repairFlow: session.repairFlow
+      }
+    })
+  );
+});
+
 app.post("/session/repair/back", requireSession, async (req, res) => {
   const session = req.fxSession;
+  ensurePhase4Fields(session);
   const rf = session.repairFlow || {};
   const idx = typeof rf.currentStepIndex === "number" ? rf.currentStepIndex : 0;
 
@@ -9466,22 +9815,24 @@ app.post("/session/repair/back", requireSession, async (req, res) => {
     return res.status(409).json({ error: "Repair is not active.", sessionId: session.sessionId });
   }
 
-  rf.currentStepIndex = Math.max(0, idx - 1);
+  rf.reviewedStepIndex = Math.max(0, idx - 1);
   rf.updatedAt = new Date().toISOString();
+  session.repairFlow = rf;
   await req.saveFxSession();
 
-  const step = getCurrentRepairStep(session);
-  const powerGate = validateRepairPowerGate(session, step);
-  const adv = canAdvanceRepair(session, step);
+  const step = Array.isArray(rf.steps) ? rf.steps[rf.reviewedStepIndex] : null;
+  const currentStep = getCurrentRepairStep(session);
+  const powerGate = validateRepairPowerGate(session, currentStep);
+  const adv = canAdvanceRepair(session, currentStep);
 
   return res.json(
     repairEnvelope({
-      type: "repair_back",
+      type: "repair_review_step",
       session,
       step,
       gate: powerGate,
       canAdvance: adv,
-      extra: { repairFlow: session.repairFlow }
+      extra: { reviewMode: true, reviewedStepIndex: rf.reviewedStepIndex, repairFlow: session.repairFlow }
     })
   );
 });
@@ -9566,8 +9917,9 @@ app.post("/session/repair/validate", requireSession, requireRepairCompleteForVal
   const observations = Array.isArray(req.body?.observations) ? req.body.observations : [];
   const notes = Array.isArray(req.body?.notes) ? req.body.notes : [];
 
-  if (!["passed", "partial", "failed"].includes(outcome)) {
-    return res.status(400).json({ error: "outcome must be passed, partial, or failed" });
+  const allowedOutcomes = ["passed", "partial", "failed", "different_problem", "unable_to_test"];
+  if (!allowedOutcomes.includes(outcome)) {
+    return res.status(400).json({ error: "outcome must be passed, partial, failed, different_problem, or unable_to_test" });
   }
 
   ensurePhase4Fields(session);
@@ -9580,7 +9932,23 @@ app.post("/session/repair/validate", requireSession, requireRepairCompleteForVal
   const plan = buildRecoveryPlan(session, outcome, session.repairFlow.validation.userObservations);
   session.repairFlow.validation.recoverySuggested = plan.suggestedKeys;
   session.repairFlow.validation.recoveryPlan = plan;
-  session.mode = "outcome";
+  session.repairFlow.validation.outcome = outcome;
+
+  if (outcome === "passed") {
+    session.mode = "outcome";
+  } else {
+    ensureDiagnosisFields(session);
+    session.mode = "diagnose";
+    session.diagnosis.locked = false;
+    session.diagnosis.status = "in_progress";
+    session.diagnosis.recommendedPath = "diagnose";
+    session.diagnosis.updatedAt = new Date().toISOString();
+    session.diagnosis.repairOutcomeFollowUp = {
+      outcome,
+      observations: session.repairFlow.validation.userObservations,
+      at: new Date().toISOString()
+    };
+  }
 
   await req.saveFxSession();
 
@@ -9589,6 +9957,7 @@ app.post("/session/repair/validate", requireSession, requireRepairCompleteForVal
     type: "outcome_validated",
     sessionId: session.sessionId,
     outcome,
+    nextAction: outcome === "passed" ? "complete" : "diagnose",
     validation: session.repairFlow.validation,
     statusSnapshot: buildStatusSnapshot(session)
   });
