@@ -5824,6 +5824,89 @@ function hasMeaningfulAnswerByIntent(session, keyOrIntent) {
   return v != null;
 }
 
+const DISHWASHER_STANDING_WATER_QUESTIONS = [
+  {
+    assistant: "When the dishwasher should drain, what happens?",
+    input: {
+      type: "choice",
+      key: "dishwasher_drain_attempt",
+      choices: ["Hums but water stays", "No sound", "Drains slowly", "I am not sure"]
+    }
+  },
+  {
+    assistant: "Is the filter or sump area visibly clogged with food, glass, labels, or debris?",
+    input: {
+      type: "choice",
+      key: "dishwasher_filter_visible_clog",
+      choices: ["Yes, visibly clogged", "No, looks clear", "I cannot tell"]
+    }
+  },
+  {
+    assistant: "Was a garbage disposal recently installed or replaced under this sink?",
+    input: {
+      type: "choice",
+      key: "dishwasher_recent_disposal_install",
+      choices: ["Yes", "No", "I am not sure"]
+    }
+  },
+  {
+    assistant: "Can you see whether the dishwasher drain hose is kinked, pinched, or routed oddly under the sink?",
+    input: {
+      type: "choice",
+      key: "dishwasher_drain_hose_kink",
+      choices: ["Yes, kinked or pinched", "No, hose looks normal", "I cannot access it"]
+    }
+  },
+  {
+    assistant: "Is the dishwasher showing an error code or blinking lights?",
+    input: {
+      type: "choice",
+      key: "dishwasher_error_code_status",
+      choices: ["Yes, there is a code", "No code", "Blinking lights only", "I am not sure"]
+    }
+  },
+  {
+    assistant: "Is the standing water mostly clean, dirty, or soapy?",
+    input: {
+      type: "choice",
+      key: "dishwasher_water_clean_dirty",
+      choices: ["Mostly clean", "Dirty", "Soapy", "I am not sure"]
+    }
+  }
+];
+
+function hasDishwasherStandingWaterConcern(session) {
+  const appliance = normalizeApplianceType(session?.appliance);
+  if (appliance !== "dishwasher") return false;
+
+  const text = [
+    session?.issueCategory,
+    session?.diagnosis?.userDescription,
+    session?.diagnosis?.reasoning?.symptomFamily,
+    session?.diagnosis?.answers?.symptomDescription,
+    session?.diagnosis?.answers?.issueDescription,
+    session?.diagnosis?.answers?.description
+  ]
+    .map((x) => normalizeText(x).toLowerCase())
+    .filter(Boolean)
+    .join(" ");
+
+  return /\b(standing water|water at the bottom|water in the bottom|not drain|not draining|won'?t drain|wont drain|slow drain|drain issue|drain problem)\b/.test(text);
+}
+
+function buildDishwasherStandingWaterQuestion(session) {
+  if (!hasDishwasherStandingWaterConcern(session)) return null;
+
+  for (const question of DISHWASHER_STANDING_WATER_QUESTIONS) {
+    const normalizedInput = normalizeTurnInput({ input: question.input });
+    const normalizedQuestion = { ...question, input: normalizedInput };
+    if (shouldRejectDiagnosticQuestion(session, normalizedQuestion)) continue;
+    return normalizedQuestion;
+  }
+
+  return null;
+}
+
 function setCurrentQuestion(session, inputObj) {
   ensureDiagnosisFields(session);
 
@@ -8597,6 +8680,50 @@ app.post("/session/diagnose/next", requireSession, async (req, res) => {
       return res.status(409).json(responseObj);
     }
 
+    const dishwasherStandingWaterQuestion0 = buildDishwasherStandingWaterQuestion(session);
+    if (dishwasherStandingWaterQuestion0) {
+      const normalizedInput = normalizeTurnInput({ input: dishwasherStandingWaterQuestion0.input });
+      setCurrentQuestion(session, normalizedInput);
+      recordDiagnosticQuestion(session, { ...dishwasherStandingWaterQuestion0, input: normalizedInput });
+      pushDiagTurn(session, "assistant", dishwasherStandingWaterQuestion0.assistant);
+
+      session.diagnosis.status = "running";
+      session.diagnosis.stage = "questions";
+      session.diagnosis.locked = false;
+      session.mode = "diagnose";
+      session.diagnosis.reasoning = session.diagnosis.reasoning || {};
+      session.diagnosis.reasoning.symptomFamily = session.diagnosis.reasoning.symptomFamily || "not_draining";
+      session.diagnosis.reasoning.lastAction = {
+        type: "dishwasher_standing_water_question",
+        at: new Date().toISOString(),
+        questionKey: normalizedInput.key
+      };
+
+      await req.saveFxSession();
+
+      const responseObj = buildSuccessResponse(session, {
+        type: "diagnose_turn",
+        nextAction: "answers",
+        diagnosis: {
+          locked: false,
+          confidence: session.diagnosis.confidence,
+          suggestedComponent: session.diagnosis.suggestedComponent || null,
+          component: session.diagnosis.component || null,
+          summaryForUser: null,
+          symptomFamily: "not_draining"
+        },
+        ui: {
+          assistantMessage: dishwasherStandingWaterQuestion0.assistant,
+          input: normalizedInput,
+          questionMeta: { source: "dishwasher_standing_water_chain" }
+        },
+        data: { deferredPartLookup: true, reason: "dishwasher_standing_water_needs_drain_evidence" }
+      });
+
+      await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
+      return res.status(200).json(responseObj);
+    }
+
     const scoredNow = tryApplyScriptedScoring(session);
 
     if (scoredNow?.locked) {
@@ -8735,6 +8862,52 @@ if (gate1.blockRepair) {
   return res.status(409).json(responseObj);
 }
 const shouldLock = evaluateLockReadiness(session);
+
+const dishwasherStandingWaterQuestion1 = acceptedLikelyDiagnosis
+  ? null
+  : buildDishwasherStandingWaterQuestion(session);
+if (dishwasherStandingWaterQuestion1) {
+  const normalizedInput = normalizeTurnInput({ input: dishwasherStandingWaterQuestion1.input });
+  setCurrentQuestion(session, normalizedInput);
+  recordDiagnosticQuestion(session, { ...dishwasherStandingWaterQuestion1, input: normalizedInput });
+  pushDiagTurn(session, "assistant", dishwasherStandingWaterQuestion1.assistant);
+
+  session.diagnosis.status = "running";
+  session.diagnosis.stage = "questions";
+  session.diagnosis.locked = false;
+  session.mode = "diagnose";
+  session.diagnosis.reasoning = session.diagnosis.reasoning || {};
+  session.diagnosis.reasoning.symptomFamily = session.diagnosis.reasoning.symptomFamily || "not_draining";
+  session.diagnosis.reasoning.lastAction = {
+    type: "dishwasher_standing_water_question",
+    at: new Date().toISOString(),
+    questionKey: normalizedInput.key
+  };
+
+  await req.saveFxSession();
+
+  const responseObj = buildSuccessResponse(session, {
+    type: "diagnose_turn",
+    nextAction: "answers",
+    diagnosis: {
+      locked: false,
+      confidence: session.diagnosis.confidence,
+      suggestedComponent: session.diagnosis.suggestedComponent || null,
+      component: session.diagnosis.component || null,
+      summaryForUser: null,
+      symptomFamily: "not_draining"
+    },
+    ui: {
+      assistantMessage: dishwasherStandingWaterQuestion1.assistant,
+      input: normalizedInput,
+      questionMeta: { source: "dishwasher_standing_water_chain" }
+    },
+    data: { deferredPartLookup: true, reason: "dishwasher_standing_water_needs_drain_evidence" }
+  });
+
+  await sessionStore.setIdempotency(session.sessionId, actionId, responseObj);
+  return res.status(200).json(responseObj);
+}
 
 if (acceptedLikelyDiagnosis) {
   const locked = lockDiagnosisForPartLookup(session);
